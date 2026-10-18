@@ -8,6 +8,8 @@ import type { Placement } from "./layout";
 import type { PileRef } from "../game/types";
 
 const DRAG_SLOP_PX = 5;
+const DOUBLE_TAP_MS = 320;
+const DOUBLE_TAP_PX = 24;
 
 interface DragState {
   from: PileRef;
@@ -30,6 +32,7 @@ interface DragState {
 export class InputHandler {
   private drag: DragState | null = null;
   private pendingStockClick: { x: number; y: number } | null = null;
+  private lastTap: { x: number; y: number; time: number } | null = null;
   private readonly canvas: HTMLCanvasElement;
   private readonly controller: GameController;
   private readonly renderer: GameRenderer;
@@ -92,6 +95,19 @@ export class InputHandler {
   };
 
   private onPointerUp = (e: PointerEvent): void => {
+    // Double-tap detection for touch/pen — the DOM `dblclick` event only
+    // fires for mouse double-clicks, never for double-taps.
+    let isDoubleTap = false;
+    if (e.pointerType !== "mouse") {
+      const now = performance.now();
+      const last = this.lastTap;
+      isDoubleTap =
+        last !== null &&
+        now - last.time < DOUBLE_TAP_MS &&
+        Math.hypot(e.clientX - last.x, e.clientY - last.y) < DOUBLE_TAP_PX;
+      this.lastTap = { x: e.clientX, y: e.clientY, time: now };
+    }
+
     if (this.pendingStockClick) {
       const moved = Math.hypot(
         e.clientX - this.pendingStockClick.x,
@@ -99,16 +115,21 @@ export class InputHandler {
       );
       this.pendingStockClick = null;
       if (moved < DRAG_SLOP_PX) this.controller.drawStock();
+      if (isDoubleTap) this.onDoubleAction(e);
       return;
     }
 
     const drag = this.drag;
     this.drag = null;
-    if (!drag) return;
+    if (!drag) {
+      if (isDoubleTap) this.onDoubleAction(e);
+      return;
+    }
 
     if (!drag.active) {
       // Simple click on a face-down stock top card draws.
       if (drag.from.type === "stock") this.controller.drawStock();
+      if (isDoubleTap) this.onDoubleAction(e);
       return;
     }
 
@@ -138,21 +159,41 @@ export class InputHandler {
     this.pendingStockClick = null;
   };
 
+  /** Mouse double-clicks arrive via `dblclick`. */
   private onDoubleClick = (e: MouseEvent): void => {
+    this.onDoubleAction(e);
+  };
+
+  /**
+   * Double click/tap: on a face-up pile-top card, send that card to a
+   * foundation; on empty felt, sweep all collectable cards — the
+   * touch-friendly counterpart of right-clicking. Double actions aimed at
+   * the stock mean "draw twice", never a sweep.
+   */
+  private onDoubleAction = (e: { clientX: number; clientY: number }): void => {
     const { controller } = this;
-    if (controller.state.status !== "playing") return;
+    if (controller.busy || controller.state.status !== "playing") return;
+
     const cardId = pickCard(this.renderer.rig, this.renderer.cardViews, e.clientX, e.clientY);
-    if (!cardId) return;
-    const location = controller.locateCard(cardId);
-    if (!location) return;
+    if (cardId) {
+      const location = controller.locateCard(cardId);
+      if (!location || location.ref.type === "stock") return;
+      if (
+        this.isPileTop(location) &&
+        (location.ref.type === "waste" || location.ref.type === "tableau")
+      ) {
+        const pile = this.pileCards(location.ref);
+        if (pile[location.index].faceUp) {
+          controller.autoToFoundation(location.ref);
+        }
+      }
+      return; // a card was hit but nothing else applied — never sweep
+    }
 
-    const isTop = this.isPileTop(location);
-    if (!isTop) return;
-    if (location.ref.type !== "waste" && location.ref.type !== "tableau") return;
-
-    const pile = this.pileCards(location.ref);
-    if (!pile[location.index].faceUp) return;
-    controller.autoToFoundation(location.ref);
+    // Taps on/near the stock slot are draw/recycle attempts, not a sweep.
+    const world = this.pointerWorld(e, 0);
+    if (world && this.overStockSlot(world)) return;
+    void controller.autoCollect();
   };
 
   /**
