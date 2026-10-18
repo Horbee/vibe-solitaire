@@ -1,6 +1,7 @@
 import * as THREE from "three";
+import { easeOutCubic } from "./anim";
 import { getCardGeometry } from "./cards";
-import { allSlots, BOARD_CENTER_Y, BOARD_H, BOARD_MARGIN, BOARD_W, slotPlacement } from "./layout";
+import { allSlots, BOARD_BOTTOM, BOARD_MARGIN, BOARD_TOP, BOARD_W, slotPlacement } from "./layout";
 
 /** Felt table texture: base green + fine noise + a soft vignette. */
 function createFeltTexture(): THREE.CanvasTexture {
@@ -91,9 +92,22 @@ export interface SceneRig {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
+  /**
+   * Fit the camera to content down to `bottom` (see `contentBottom`).
+   * With `animate` the camera glides to the new zoom; otherwise it snaps.
+   */
+  fitBounds(bottom: number, animate: boolean): void;
+  /** Immediate refit to the current bounds (used on container resize). */
   resize(): void;
+  /** Advance any in-flight zoom tween; call from the render loop. */
+  tick(): void;
   dispose(): void;
 }
+
+const ZOOM_MS = 550;
+// Extra slack below the deepest card: keeps big stacks clear of the screen
+// edge (browser chrome, rounded corners, fingers) instead of hugging it.
+const BOTTOM_PAD = 1.1;
 
 export function createSceneRig(container: HTMLElement): SceneRig {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -109,40 +123,99 @@ export function createSceneRig(container: HTMLElement): SceneRig {
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
 
-  const fitCamera = () => {
+  // Camera fitting tracks the content bottom (deepest tableau card) rather
+  // than the static worst-case board height, so wide screens stay zoomed in.
+  let fitBottom = BOARD_BOTTOM;
+  const applied = { dist: 0, cy: 0 };
+  let zoom: {
+    from: { dist: number; cy: number };
+    to: { dist: number; cy: number };
+    startAt: number;
+  } | null = null;
+
+  const fitTarget = (): { dist: number; cy: number } => {
     const w = container.clientWidth || 1;
     const h = container.clientHeight || 1;
     renderer.setSize(w, h);
     camera.aspect = w / h;
 
+    const top = BOARD_TOP + BOARD_MARGIN;
+    const bottom = fitBottom - BOTTOM_PAD;
     const fitW = BOARD_W + BOARD_MARGIN * 2;
-    const fitH = BOARD_H + BOARD_MARGIN * 2;
+    const fitH = top - bottom;
     const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
     const distForHeight = fitH / 2 / Math.tan(halfFov);
     const distForWidth = fitW / 2 / Math.tan(halfFov) / camera.aspect;
     const dist = Math.max(distForHeight, distForWidth) * 1.02;
 
-    camera.position.set(0, BOARD_CENTER_Y, dist);
-    camera.lookAt(0, BOARD_CENTER_Y, 0);
-    camera.updateProjectionMatrix();
-    if (location.search.includes("debug")) {
-      console.info(
-        `[rig] container=${w}x${h} aspect=${camera.aspect.toFixed(3)} dist=${dist.toFixed(2)} ` +
-          `visibleW=${(2 * dist * Math.tan(halfFov) * camera.aspect).toFixed(2)} ` +
-          `canvas=${renderer.domElement.width}x${renderer.domElement.height} style=${renderer.domElement.style.width}x${renderer.domElement.style.height}`,
-      );
-    }
+    return { dist, cy: (top + bottom) / 2 };
   };
-  fitCamera();
 
-  const observer = new ResizeObserver(fitCamera);
+  const applyCamera = (dist: number, cy: number): void => {
+    applied.dist = dist;
+    applied.cy = cy;
+    camera.position.set(0, cy, dist);
+    camera.lookAt(0, cy, 0);
+    camera.updateProjectionMatrix();
+  };
+
+  const debugLog = (dist: number): void => {
+    if (!location.search.includes("debug")) return;
+    const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+    const w = container.clientWidth || 1;
+    const h = container.clientHeight || 1;
+    console.info(
+      `[rig] container=${w}x${h} aspect=${camera.aspect.toFixed(3)} dist=${dist.toFixed(2)} ` +
+        `visibleW=${(2 * dist * Math.tan(halfFov) * camera.aspect).toFixed(2)} ` +
+        `canvas=${renderer.domElement.width}x${renderer.domElement.height} style=${renderer.domElement.style.width}x${renderer.domElement.style.height}`,
+    );
+  };
+
+  const snapToFit = (): void => {
+    zoom = null;
+    const { dist, cy } = fitTarget();
+    applyCamera(dist, cy);
+    debugLog(dist);
+  };
+
+  const fitBounds = (bottom: number, animate: boolean): void => {
+    fitBottom = bottom;
+    const target = fitTarget();
+    const moved =
+      Math.abs(target.dist - applied.dist) > 1e-3 || Math.abs(target.cy - applied.cy) > 1e-3;
+    if (!animate || !moved) {
+      zoom = null;
+      applyCamera(target.dist, target.cy);
+    } else {
+      // Retarget mid-flight when the bounds change again before we arrive.
+      zoom = { from: { ...applied }, to: target, startAt: performance.now() };
+    }
+    debugLog(target.dist);
+  };
+
+  const tick = (): void => {
+    if (!zoom) return;
+    const t = Math.min(1, (performance.now() - zoom.startAt) / ZOOM_MS);
+    const e = easeOutCubic(t);
+    applyCamera(
+      zoom.from.dist + (zoom.to.dist - zoom.from.dist) * e,
+      zoom.from.cy + (zoom.to.cy - zoom.from.cy) * e,
+    );
+    if (t >= 1) zoom = null;
+  };
+
+  snapToFit();
+
+  const observer = new ResizeObserver(snapToFit);
   observer.observe(container);
 
   return {
     renderer,
     scene,
     camera,
-    resize: fitCamera,
+    fitBounds,
+    resize: snapToFit,
+    tick,
     dispose() {
       observer.disconnect();
       renderer.dispose();

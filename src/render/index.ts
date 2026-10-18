@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { createAtlasTexture } from "./atlas";
 import { Animator } from "./anim";
 import { CardView, createCardViews, getCardGeometry } from "./cards";
-import { cardPlacement, slotPlacement } from "./layout";
+import { cardPlacement, contentBottom, slotPlacement } from "./layout";
 import type { Placement } from "./layout";
 import { createSceneRig } from "./scene";
 import type { SceneRig } from "./scene";
@@ -154,6 +154,11 @@ export async function createGameRenderer(
     const from = posesOf(prev);
     const to = posesOf(next);
 
+    // Camera zooms in/out with the tableau depth, gliding alongside the
+    // card flights below (the zoom tween is the rig's own, so the final
+    // syncState's cancelAll can't cut it short).
+    rig.fitBounds(contentBottom(next), true);
+
     // Sequencing: cards drawn from the stock fly after existing waste cards
     // have shifted aside, staggered by draw order — flight paths never cross.
     const drawnIds = [...to.entries()]
@@ -257,6 +262,9 @@ export async function createGameRenderer(
     const jobs: Promise<void>[] = [];
     const spawn = defaultSpawnPose();
 
+    // Zoom in on the freshly dealt cards as they fly out.
+    rig.fitBounds(contentBottom(state), true);
+
     // Tableau cards fly out in deal order (row-major), then the stock lands.
     for (let col = 0; col < 7; col++) {
       const pile = state.tableau[col];
@@ -284,6 +292,7 @@ export async function createGameRenderer(
   let running = false;
   const loop = () => {
     animator.tick();
+    rig.tick();
     rig.renderer.render(rig.scene, rig.camera);
   };
 

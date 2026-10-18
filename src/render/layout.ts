@@ -44,6 +44,28 @@ export const BOARD_BOTTOM = TABLEAU_TOP_Y - MAX_TABLEAU_DEPTH - CARD_H / 2;
 export const BOARD_H = BOARD_TOP - BOARD_BOTTOM;
 export const BOARD_CENTER_Y = (BOARD_TOP + BOARD_BOTTOM) / 2;
 
+/** Never zoom tighter than this much content height. */
+const MIN_CONTENT_H = 5.5;
+
+/**
+ * Bottom edge of the actual content in play (deepest tableau card),
+ * used for dynamic camera fitting: landscape views zoom in on the cards
+ * instead of reserving space for the worst-case tableau depth. Clamped
+ * so a shallow tableau doesn't zoom in too far.
+ */
+export function contentBottom(state: GameState): number {
+  let bottom = TABLEAU_TOP_Y - CARD_H / 2; // empty tableau still shows its row
+  for (let col = 0; col < state.tableau.length; col++) {
+    const pile = state.tableau[col];
+    if (pile.length === 0) continue;
+    const last = cardPlacement(state, { type: "tableau", index: col }, pile.length - 1);
+    bottom = Math.min(bottom, last.y - CARD_H / 2);
+  }
+  // Enforce a minimum content height: a shallow game still shows at
+  // least MIN_CONTENT_H world units instead of zooming up close.
+  return Math.min(bottom, BOARD_TOP - MIN_CONTENT_H);
+}
+
 export interface Placement {
   x: number;
   y: number;

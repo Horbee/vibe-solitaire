@@ -54,6 +54,11 @@ Timing discipline — follow it when adding transitions:
   neighboring piles and cards land flat.
 - Per-card tweens are keyed (`animator.add({key: cardId})`) — a new tween cancels the
   in-flight one, then every `animate*` call ends with an exact `syncState`.
+- Camera zoom is dynamic: the rig fits to `contentBottom(state)` (deepest tableau
+  card), not the static worst-case `BOARD_H`, so landscape stays zoomed in on the
+  cards. The zoom tween lives in the rig (`fitBounds(bottom, animate)`, ticked via
+  `rig.tick()`), deliberately NOT in the shared `Animator` — `syncState`'s
+  `cancelAll` must not cut it short. Resizes snap; state-driven refits glide.
 
 ## Conventions & gotchas
 
