@@ -4,7 +4,7 @@ import { deal } from "./game/deck";
 import { History } from "./game/history";
 import { hint as findHint } from "./game/hint";
 import type { Hint } from "./game/hint";
-import { autoSolve } from "./game/solve";
+import { autoCollectMoves, autoSolve } from "./game/solve";
 import type { DrawMode, GameState, Move, PileRef } from "./game/types";
 import { foundationRef, FOUNDATION_COUNT, tableauRef, TABLEAU_COUNT } from "./game/types";
 import { cardPlacement, nextPlacement, slotPlacement } from "./render/layout";
@@ -23,8 +23,10 @@ function randomSeed(): number {
 }
 
 type ChangeListener = () => void;
+type MessageListener = (text: string) => void;
 
 const SOLVE_STEP_MS = 300;
+const COLLECT_STEP_MS = 150;
 
 /**
  * Orchestrates the pure engine, the renderer, the HUD, and stats.
@@ -40,6 +42,7 @@ export class GameController {
   private readonly renderer: GameRenderer;
   private readonly stats: StatsStore;
   private readonly listeners = new Set<ChangeListener>();
+  private readonly messageListeners = new Set<MessageListener>();
   private startedAt = Date.now();
   private gameRecorded = false;
   private solveToken = 0;
@@ -57,6 +60,16 @@ export class GameController {
   onChange(listener: ChangeListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** Toast-style messages for the HUD (e.g. "Nothing to collect"). */
+  onMessage(listener: MessageListener): () => void {
+    this.messageListeners.add(listener);
+    return () => this.messageListeners.delete(listener);
+  }
+
+  private say(text: string): void {
+    for (const listener of this.messageListeners) listener(text);
   }
 
   private emit(): void {
@@ -189,6 +202,37 @@ export class GameController {
         if (token !== this.solveToken || this.state.status !== "playing") break;
         if (!this.apply(move)) break;
         await new Promise((r) => setTimeout(r, SOLVE_STEP_MS));
+      }
+    } finally {
+      if (token === this.solveToken) {
+        this.solving = false;
+        this.emit();
+      }
+    }
+  }
+
+  // ------------------------------------------------------------- collect
+
+  /**
+   * Right-click collection: sweep every exposed last card (waste top and
+   * tableau tops) onto the foundations, looping until nothing more fits.
+   * Each card is its own undo step.
+   */
+  async autoCollect(): Promise<void> {
+    if (this.solving || this.state.status !== "playing") return;
+    const moves = autoCollectMoves(this.state);
+    if (moves.length === 0) {
+      this.say("Nothing to collect");
+      return;
+    }
+    this.solving = true;
+    const token = ++this.solveToken;
+    this.emit();
+    try {
+      for (const move of moves) {
+        if (token !== this.solveToken || this.state.status !== "playing") break;
+        if (!this.apply(move)) break;
+        await new Promise((r) => setTimeout(r, COLLECT_STEP_MS));
       }
     } finally {
       if (token === this.solveToken) {

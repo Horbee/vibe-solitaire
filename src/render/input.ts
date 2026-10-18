@@ -43,6 +43,7 @@ export class InputHandler {
     this.canvas.addEventListener("pointerup", this.onPointerUp);
     this.canvas.addEventListener("pointercancel", this.onPointerCancel);
     this.canvas.addEventListener("dblclick", this.onDoubleClick);
+    this.canvas.addEventListener("contextmenu", this.onContextMenu);
     this.canvas.style.touchAction = "none";
   }
 
@@ -52,6 +53,7 @@ export class InputHandler {
     this.canvas.removeEventListener("pointerup", this.onPointerUp);
     this.canvas.removeEventListener("pointercancel", this.onPointerCancel);
     this.canvas.removeEventListener("dblclick", this.onDoubleClick);
+    this.canvas.removeEventListener("contextmenu", this.onContextMenu);
   }
 
   // ---------------------------------------------------------------- events
@@ -151,6 +153,33 @@ export class InputHandler {
     const pile = this.pileCards(location.ref);
     if (!pile[location.index].faceUp) return;
     controller.autoToFoundation(location.ref);
+  };
+
+  /**
+   * Right click: on a face-up pile-top card, send that card to a foundation;
+   * anywhere else (felt, stock, foundations), sweep all collectable cards.
+   */
+  private onContextMenu = (e: MouseEvent): void => {
+    e.preventDefault();
+    const { controller } = this;
+    if (controller.busy || controller.state.status !== "playing") return;
+
+    const cardId = pickCard(this.renderer.rig, this.renderer.cardViews, e.clientX, e.clientY);
+    if (cardId) {
+      const location = controller.locateCard(cardId);
+      if (
+        location &&
+        this.isPileTop(location) &&
+        (location.ref.type === "waste" || location.ref.type === "tableau")
+      ) {
+        const pile = this.pileCards(location.ref);
+        if (pile[location.index].faceUp) {
+          controller.autoToFoundation(location.ref);
+          return;
+        }
+      }
+    }
+    void controller.autoCollect();
   };
 
   // ------------------------------------------------------------------ drag

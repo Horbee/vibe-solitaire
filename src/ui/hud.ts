@@ -101,6 +101,7 @@ export class HUD {
     this.statsModal = makeModal("Statistics");
 
     controller.onChange(() => this.update());
+    controller.onMessage((text) => this.toast(text));
     window.addEventListener("keydown", (e) => this.onKeydown(e));
     setInterval(() => this.updateTime(), 500);
     this.update();
@@ -146,6 +147,21 @@ export class HUD {
   private onKeydown(e: KeyboardEvent): void {
     if (e.target instanceof HTMLInputElement) return;
     const modalOpen = !this.winModal.root.hidden || !this.statsModal.root.hidden;
+
+    // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y = redo.
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      if (!modalOpen) {
+        if (e.shiftKey) this.controller.redo();
+        else this.controller.undo();
+      }
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+      e.preventDefault();
+      if (!modalOpen) this.controller.redo();
+      return;
+    }
 
     switch (e.key.toLowerCase()) {
       case "escape":

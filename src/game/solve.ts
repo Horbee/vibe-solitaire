@@ -1,8 +1,8 @@
 import { hint } from "./hint";
 import { applyMove } from "./moves";
-import { topCard } from "./rules";
-import type { GameState, Move } from "./types";
-import { foundationRef, FOUNDATION_COUNT } from "./types";
+import { canPlaceOnFoundation, getPile, topCard } from "./rules";
+import type { GameState, Move, PileRef } from "./types";
+import { foundationRef, FOUNDATION_COUNT, tableauRef, WASTE } from "./types";
 
 /**
  * Card fingerprint used for loop detection. Face-down tableau cards keep the
@@ -95,4 +95,50 @@ export function autoSolve(state: GameState, maxMoves = 2000): SolveResult {
   }
 
   return { solved: current.status === "won", moves };
+}
+
+/**
+ * Right-click collection: repeatedly move the lowest-ranked exposed card
+ * (waste top or any tableau top) onto a foundation until nothing more
+ * qualifies. Never draws from the stock. Bounded by 52 placements, so it
+ * always terminates. Returns the move list (possibly empty).
+ */
+export function autoCollectMoves(state: GameState): Move[] {
+  if (state.status !== "playing") return [];
+  const moves: Move[] = [];
+  let current = state;
+
+  for (let i = 0; i < 52; i++) {
+    const nextMove = lowestRankedFoundationMove(current);
+    if (!nextMove) return moves;
+    const next = applyMove(current, nextMove);
+    if (!next) return moves;
+    moves.push(nextMove);
+    current = next;
+    if (current.status === "won") return moves;
+  }
+  return moves;
+}
+
+/** The legal foundation move using the lowest-ranked exposed card. */
+function lowestRankedFoundationMove(state: GameState): Move | null {
+  let best: Move | null = null;
+  let bestRank = Infinity;
+
+  const sources: PileRef[] = [
+    WASTE,
+    ...Array.from({ length: state.tableau.length }, (_, i) => tableauRef(i)),
+  ];
+  for (const from of sources) {
+    const card = topCard(getPile(state, from));
+    if (!card?.faceUp || card.rank >= bestRank) continue;
+    for (let f = 0; f < FOUNDATION_COUNT; f++) {
+      if (canPlaceOnFoundation(card, state.foundations[f])) {
+        best = { kind: "move", from, to: foundationRef(f), count: 1 };
+        bestRank = card.rank;
+        break;
+      }
+    }
+  }
+  return best;
 }
