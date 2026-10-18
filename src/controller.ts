@@ -11,6 +11,7 @@ import { cardPlacement, nextPlacement, slotPlacement } from "./render/layout";
 import type { Placement } from "./render/layout";
 import type { GameRenderer } from "./render/index";
 import type { StatsStore } from "./ui/statsStore";
+import type { SoundEngine } from "./audio/index";
 
 export interface CardLocation {
   ref: PileRef;
@@ -41,15 +42,22 @@ export class GameController {
 
   private readonly renderer: GameRenderer;
   private readonly stats: StatsStore;
+  private readonly sounds?: SoundEngine;
   private readonly listeners = new Set<ChangeListener>();
   private readonly messageListeners = new Set<MessageListener>();
   private startedAt = Date.now();
   private gameRecorded = false;
   private solveToken = 0;
 
-  constructor(renderer: GameRenderer, stats: StatsStore, drawMode: DrawMode = 1) {
+  constructor(
+    renderer: GameRenderer,
+    stats: StatsStore,
+    drawMode: DrawMode = 1,
+    sounds?: SoundEngine,
+  ) {
     this.renderer = renderer;
     this.stats = stats;
+    this.sounds = sounds;
     this.drawMode = drawMode;
     this.state = deal(randomSeed(), drawMode);
     void this.renderer.animateDeal(this.state);
@@ -286,6 +294,7 @@ export class GameController {
   private checkGameEnd(): void {
     if (this.state.status !== "won" || this.gameRecorded) return;
     this.gameRecorded = true;
+    this.sounds?.play("win");
     this.stats.record(this.drawMode, {
       won: true,
       seconds: this.elapsedSec(),

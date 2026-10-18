@@ -1,5 +1,6 @@
 import { GameController } from "./controller";
 import { registerPwa } from "./pwa";
+import { createSoundEngine } from "./audio/index";
 import { createGameRenderer } from "./render/index";
 import { InputHandler } from "./render/input";
 import { HUD } from "./ui/hud";
@@ -16,11 +17,16 @@ async function main(): Promise<void> {
   board.id = "board";
   app.append(hud, board);
 
-  const renderer = await createGameRenderer(board);
+  const sounds = createSoundEngine();
+  // Browsers block audio until a user gesture; unlock on any pointerdown
+  // (idempotent — also re-unlocks after the tab was suspended).
+  document.addEventListener("pointerdown", () => sounds.resume(), { capture: true });
+
+  const renderer = await createGameRenderer(board, sounds);
   const stats = new StatsStore();
-  const controller = new GameController(renderer, stats, 1);
-  new HUD(controller, stats);
-  new InputHandler(controller, renderer);
+  const controller = new GameController(renderer, stats, 1, sounds);
+  new HUD(controller, stats, sounds);
+  new InputHandler(controller, renderer, sounds);
   renderer.start();
 }
 

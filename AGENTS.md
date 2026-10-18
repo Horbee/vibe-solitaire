@@ -27,11 +27,14 @@ architecture; keep the seam.
 Layers and the direction of dependency (lower never imports higher):
 
 1. `src/game/` — engine: types, seeded shuffle/deal, rules, moves, history, hint, solve.
-2. `src/render/` — Three.js: atlas (procedural SVG card art), layout (fixed world-space
-   board coordinates), scene, cards, input, anim. Imports `game`.
-3. `src/controller.ts` — orchestration: owns `state`, history, timer, solver playback;
+2. `src/audio/` — procedural WebAudio SFX (`createSoundEngine`): oscillators + filtered
+   noise, no asset files. Imports nothing; render/input/controller emit cues, the HUD
+   owns the mute toggle, `main.ts` wires it up.
+3. `src/render/` — Three.js: atlas (procedural SVG card art), layout (fixed world-space
+   board coordinates), scene, cards, input, anim. Imports `game` and `audio`.
+4. `src/controller.ts` — orchestration: owns `state`, history, timer, solver playback;
    fires animations; imports both. HUD and input never talk to the engine directly.
-4. `src/ui/` — DOM HUD and stats store. Subscribes to controller events; calls gated
+5. `src/ui/` — DOM HUD and stats store. Subscribes to controller events; calls gated
    controller methods.
 
 ## Animation model (learned the hard way)
@@ -61,9 +64,9 @@ Timing discipline — follow it when adding transitions:
   per-card undo steps).
 - **Deals are seeded** (`mulberry32`); `deal(seed, drawMode)` is deterministic. Keep it
   that way — seeded games are how bugs get reproduced.
-- Tests live in `tests/game/`, import from `vite-plus/test` (Vitest is bundled; there is
-  no `vitest` dependency). Build hand-crafted states with the `c()`/`makeState()`
-  helpers in `tests/game/helpers.ts`.
+- Tests live in `tests/` (mirroring `src/`), import from `vite-plus/test` (Vitest is
+  bundled; there is no `vitest` dependency). Build hand-crafted states with the
+  `c()`/`makeState()` helpers in `tests/game/helpers.ts`.
 - tsconfig sets `erasableSyntaxOnly` — **no parameter properties** (`constructor(private
   x)`) or enums; declare fields and assign in the constructor. `verbatimModuleSyntax`
   requires `import type` for type-only imports.
@@ -74,6 +77,13 @@ Timing discipline — follow it when adding transitions:
 - Card art is generated SVG in `render/atlas.ts` (13×4 faces + 1 back tile, one shared
   texture), not asset files. PWA icons in `public/` were rasterized from `icon.svg` via
   headless Chrome.
+- **Sound cues ride the animation timeline**: `render/index.ts` fires `flip` at the
+  tween's 57.5% spin midpoint and `land` at arrival; `_recycle_` sweeps tick per card.
+  Cues are scheduled on the AudioContext clock (`play(cue, delayMs)`), never setTimeout.
+  Before the first pointer gesture the context is suspended and cues drop silently;
+  identical cues are throttled (~20–90 ms per kind) so solve/undo bursts stay musical.
+  Mute persists in `localStorage` key `solitaire.audio.v1`; all timbres are constants
+  at the top of `audio/index.ts` (`GAIN`, `THROTTLE_MS`, `WIN_NOTES`) — tweak there.
 - Scoring lives in one constant (`SCORE` in `game/types.ts`); tweak there only.
 
 ## Git

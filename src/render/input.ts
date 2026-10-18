@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { CardLocation, GameController } from "../controller";
+import type { SoundEngine } from "../audio/index";
 import type { CardView } from "./cards";
 import type { GameRenderer } from "./index";
 import { pickCard } from "./index";
@@ -36,10 +37,12 @@ export class InputHandler {
   private readonly canvas: HTMLCanvasElement;
   private readonly controller: GameController;
   private readonly renderer: GameRenderer;
+  private readonly sounds?: SoundEngine;
 
-  constructor(controller: GameController, renderer: GameRenderer) {
+  constructor(controller: GameController, renderer: GameRenderer, sounds?: SoundEngine) {
     this.controller = controller;
     this.renderer = renderer;
+    this.sounds = sounds;
     this.canvas = renderer.rig.renderer.domElement;
     this.canvas.addEventListener("pointerdown", this.onPointerDown);
     this.canvas.addEventListener("pointermove", this.onPointerMove);
@@ -146,6 +149,7 @@ export class InputHandler {
       this.controller.tryMove(drag.from, target, drag.count);
     } else {
       this.controller.refresh(); // snap back
+      this.sounds?.play("invalid");
     }
   };
 
@@ -184,7 +188,7 @@ export class InputHandler {
       ) {
         const pile = this.pileCards(location.ref);
         if (pile[location.index].faceUp) {
-          controller.autoToFoundation(location.ref);
+          if (!controller.autoToFoundation(location.ref)) this.sounds?.play("invalid");
         }
       }
       return; // a card was hit but nothing else applied — never sweep
@@ -215,7 +219,7 @@ export class InputHandler {
       ) {
         const pile = this.pileCards(location.ref);
         if (pile[location.index].faceUp) {
-          controller.autoToFoundation(location.ref);
+          if (!controller.autoToFoundation(location.ref)) this.sounds?.play("invalid");
           return;
         }
       }
@@ -285,6 +289,7 @@ export class InputHandler {
   private activateDrag(): void {
     const drag = this.drag!;
     drag.active = true;
+    this.sounds?.play("pickup");
     // Show legal drop targets for this stack.
     this.renderer.setHighlights(
       this.controller

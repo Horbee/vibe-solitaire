@@ -1,5 +1,6 @@
 import type { GameController } from "../controller";
 import type { StatsStore } from "./statsStore";
+import type { SoundEngine } from "../audio/index";
 
 function formatTime(totalSec: number): string {
   const m = Math.floor(totalSec / 60);
@@ -49,6 +50,7 @@ export class HUD {
   private hintBtn: HTMLButtonElement;
   private solveBtn: HTMLButtonElement;
   private drawBtn: HTMLButtonElement;
+  private soundBtn: HTMLButtonElement;
   private toastEl: HTMLDivElement;
   private winModal: Modal;
   private statsModal: Modal;
@@ -56,10 +58,12 @@ export class HUD {
   private winShownForSeed: number | null = null;
   private readonly controller: GameController;
   private readonly stats: StatsStore;
+  private readonly sounds?: SoundEngine;
 
-  constructor(controller: GameController, stats: StatsStore) {
+  constructor(controller: GameController, stats: StatsStore, sounds?: SoundEngine) {
     this.controller = controller;
     this.stats = stats;
+    this.sounds = sounds;
     const hud = document.getElementById("hud")!;
 
     this.scoreEl = el("strong", "", "0");
@@ -79,6 +83,9 @@ export class HUD {
     this.hintBtn = this.button("Hint", () => this.onHint());
     this.solveBtn = this.button("Solve", () => void controller.solve());
     const statsBtn = this.button("Stats", () => this.showStats());
+    this.soundBtn = this.button("", () => this.onToggleSound());
+    this.soundBtn.hidden = !sounds;
+    this.soundBtn.title = "Toggle sound";
 
     const actions = el("div", "actions");
     actions.append(
@@ -89,6 +96,7 @@ export class HUD {
       this.hintBtn,
       this.solveBtn,
       statsBtn,
+      this.soundBtn,
     );
 
     hud.append(statsBar, el("div", "spacer"), actions);
@@ -136,6 +144,7 @@ export class HUD {
     this.solveBtn.disabled = state.status !== "playing" || controller.busy;
     this.solveBtn.textContent = controller.busy ? "Solving…" : "Solve";
     this.drawBtn.textContent = `Draw ${controller.drawMode === 1 ? 1 : 3}`;
+    this.soundBtn.textContent = this.sounds?.muted === true ? "🔇" : "🔊";
 
     if (state.status === "won") this.showWin();
   }
@@ -213,6 +222,12 @@ export class HUD {
     this.winModal.close();
     this.winShownForSeed = null;
     controller.newGame(next);
+  }
+
+  private onToggleSound(): void {
+    if (!this.sounds) return;
+    this.sounds.setMuted(!this.sounds.muted);
+    this.update();
   }
 
   private onHint(): void {

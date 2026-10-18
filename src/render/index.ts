@@ -9,6 +9,7 @@ import type { SceneRig } from "./scene";
 import { createDeck } from "../game/deck";
 import type { Card, GameState, PileRef } from "../game/types";
 import { samePile } from "../game/types";
+import type { SoundEngine } from "../audio/index";
 
 interface Pose {
   x: number;
@@ -44,7 +45,10 @@ export interface GameRenderer {
   dispose(): void;
 }
 
-export async function createGameRenderer(container: HTMLElement): Promise<GameRenderer> {
+export async function createGameRenderer(
+  container: HTMLElement,
+  sounds?: SoundEngine,
+): Promise<GameRenderer> {
   const atlas = await createAtlasTexture();
   const rig = createSceneRig(container);
   const animator = new Animator();
@@ -227,6 +231,17 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
         duration = 240;
       }
       jobs.push(tweenCard(view, start ?? defaultSpawnPose(), dest, delay, duration));
+
+      // Sound cues ride the same timeline as the tween: flips sound when
+      // the card passes edge-on (midpoint of the 30–85% spin window),
+      // movers when they arrive. Recycle sweeps tick instead of flipping.
+      if (sounds) {
+        const isRecycle = srcType === "waste" && dstType === "stock";
+        const isWasteShift = srcType === "waste" && dstType === "waste";
+        if (flipped && !isRecycle) sounds.play("flip", delay + duration * 0.575);
+        if (moved && isRecycle) sounds.play("recycle", delay);
+        else if (moved && !isWasteShift) sounds.play("land", delay + duration);
+      }
     }
     await Promise.all(jobs);
     syncState(next);
@@ -251,6 +266,7 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
         const dest = to.get(id);
         if (!view || !dest) continue;
         jobs.push(tweenCard(view, spawn, dest, (row * 7 + col) * 24, 220));
+        sounds?.play("deal", (row * 7 + col) * 24);
       }
     }
     for (const card of state.stock) {
