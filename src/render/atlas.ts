@@ -61,8 +61,8 @@ function faceTileSVG(suit: Suit, rank: number, x: number, y: number): string {
   const fill = SUIT_FILL[suit];
 
   const corner = `
-    <text x="30" y="72" font-size="60" font-weight="700" fill="${fill}" text-anchor="middle">${label}</text>
-    <text x="30" y="128" font-size="50" fill="${fill}" text-anchor="middle">${glyph}</text>`;
+    <text x="46" y="72" font-size="60" font-weight="700" fill="${fill}" text-anchor="middle">${label}</text>
+    <text x="46" y="128" font-size="50" fill="${fill}" text-anchor="middle">${glyph}</text>`;
 
   let center: string;
   if (rank === 1) {

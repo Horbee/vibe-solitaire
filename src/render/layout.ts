@@ -25,6 +25,17 @@ export const BOARD_MARGIN = 0.35;
 const TOP_ROW_Y = 2.62; // center y of stock/waste/foundation row
 const TABLEAU_TOP_Y = TOP_ROW_Y - (CARD_H / 2 + ROW_GAP + CARD_H / 2);
 
+/**
+ * Deterministic hash in [-1, 1] for per-slot jitter. Stacks get a tiny
+ * random-looking offset so cards never sit pixel-perfectly on top of each
+ * other — but stable, so pose-diffing animations don't re-jitter.
+ */
+function stackJitter(pileIndex: number, stackIndex: number, salt: number): number {
+  const seed = pileIndex * 374761393 + stackIndex * 668265263 + salt * 1274126177;
+  const mixed = Math.sin(seed * 1e-7) * 43758.5453;
+  return (mixed - Math.floor(mixed)) * 2 - 1;
+}
+
 // A tableau pile can hold at most 6 face-down + 13 face-up cards.
 const MAX_TABLEAU_DEPTH = 6 * OVERLAP_DOWN + 12 * OVERLAP_UP;
 
@@ -73,10 +84,15 @@ export function cardPlacement(state: GameState, ref: PileRef, stackIndex: number
     }
     // Slight per-pile z raise keeps piles from z-fighting their slots.
     z += ref.index * 0.001;
-    return { x: base.x, y, z };
+    const jx = stackIndex === 0 ? 0 : stackJitter(ref.index, stackIndex, 1) * 0.018;
+    const jy = stackIndex === 0 ? 0 : stackJitter(ref.index, stackIndex, 2) * 0.012;
+    return { x: base.x + jx, y: y + jy, z };
   }
   if (ref.type === "foundation") {
     z += 0.05 + ref.index * 0.001;
+    const jx = stackIndex === 0 ? 0 : stackJitter(ref.index + 10, stackIndex, 1) * 0.015;
+    const jy = stackIndex === 0 ? 0 : stackJitter(ref.index + 10, stackIndex, 2) * 0.015;
+    return { x: base.x + jx, y: base.y + jy, z };
   }
   if (ref.type === "waste") {
     // Fan out the visible tail of the waste (up to 3 cards).
