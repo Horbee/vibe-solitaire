@@ -8,6 +8,7 @@ import { createSceneRig } from "./scene";
 import type { SceneRig } from "./scene";
 import { createDeck } from "../game/deck";
 import type { Card, GameState, PileRef } from "../game/types";
+import { samePile } from "../game/types";
 
 interface Pose {
   x: number;
@@ -20,6 +21,8 @@ interface Pose {
 }
 
 const ARC_LIFT = 0.35; // z bump while a card is in transit
+const MOVE_FLIP_LIFT = 0.55; // higher when the move also flips (stock draw)
+const FLIP_LIFT = 1.0; // in-place reveals lift well clear of neighboring piles
 
 export interface GameRenderer {
   readonly rig: SceneRig;
@@ -110,6 +113,11 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
     const group = view.group;
     const fromRot = from.faceUp ? 0 : Math.PI;
     const toRot = to.faceUp ? 0 : Math.PI;
+    const flips = from.faceUp !== to.faceUp;
+    const stays = Math.abs(to.x - from.x) + Math.abs(to.y - from.y) < 1e-4;
+    // Flipping cards need air above the table otherwise their silhouette
+    // sweeps across neighboring piles mid-rotation.
+    const arc = !flips ? ARC_LIFT : stays ? FLIP_LIFT : MOVE_FLIP_LIFT;
     group.visible = true;
     group.position.set(from.x, from.y, from.z);
     group.rotation.y = fromRot;
@@ -122,11 +130,12 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
           group.position.set(
             from.x + (to.x - from.x) * t,
             from.y + (to.y - from.y) * t,
-            from.z + (to.z - from.z) * t + Math.sin(t * Math.PI) * ARC_LIFT,
+            from.z + (to.z - from.z) * t + Math.sin(t * Math.PI) * arc,
           );
-          if (from.faceUp !== to.faceUp) {
-            // Hold the flip until the second half of the flight.
-            const rt = Math.min(1, Math.max(0, (t - 0.35) / 0.65));
+          if (flips) {
+            // Spin between 30% and 85% of the flight: pop up, turn over
+            // at altitude, then descend onto the table already flat.
+            const rt = Math.min(1, Math.max(0, (t - 0.3) / 0.55));
             group.rotation.y = fromRot + (toRot - fromRot) * rt;
           }
         },
@@ -148,6 +157,34 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
       .sort((a, b) => (a[1].index ?? 0) - (b[1].index ?? 0))
       .map(([id]) => id);
     const drawOrder = new Map(drawnIds.map((id, i) => [id, i]));
+
+    // Ordering of a move vs. an in-place flip on the same pile:
+    //  - mover ARRIVING on the flip card's pile (undo of a revealing move):
+    //    flip faces down first, then the mover lands — the other order
+    //    buries a still-face-up card.
+    //  - mover LEAVING the flip card's pile (forward/redo reveal): move
+    //    first, flip after, so the mover lifts clear before the card turns.
+    const posMoved = (a: Pose, b: Pose): boolean =>
+      Math.abs(a.x - b.x) > 1e-4 || Math.abs(a.y - b.y) > 1e-4 || Math.abs(a.z - b.z) > 1e-4;
+    const pileKey = (r: PileRef): string => `${r.type}:${r.index}`;
+
+    const movedEntries: { start: Pose; dest: Pose }[] = [];
+    for (const [id, dest] of to) {
+      const start = from.get(id);
+      if (start && posMoved(start, dest)) movedEntries.push({ start, dest });
+    }
+    const hasMotion = movedEntries.length > 0;
+
+    // Piles where an in-place flip coincides with an arriving mover.
+    const arrivingPiles = new Set<string>();
+    for (const [id, dest] of to) {
+      const start = from.get(id);
+      if (!start || !dest.ref) continue;
+      if (posMoved(start, dest) || start.faceUp === dest.faceUp) continue;
+      if (movedEntries.some((m) => m.dest.ref && samePile(m.dest.ref, dest.ref!))) {
+        arrivingPiles.add(pileKey(dest.ref));
+      }
+    }
 
     const jobs: Promise<void>[] = [];
     for (const [id, dest] of to) {
@@ -171,7 +208,13 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
       let duration = 260;
       const srcType = start?.ref?.type;
       const dstType = dest.ref?.type;
-      if (drawOrder.has(id)) {
+      if (!moved && flipped && hasMotion) {
+        duration = 240;
+        delay =
+          dest.ref && arrivingPiles.has(pileKey(dest.ref))
+            ? 0 // flip first; the arriving mover waits its turn below
+            : 260; // mover lifts clear of the pile first, then reveal
+      } else if (drawOrder.has(id)) {
         delay = 110 + drawOrder.get(id)! * 90; // stock -> waste draw
         duration = 240;
       } else if (srcType === "waste" && dstType === "waste") {
@@ -179,6 +222,9 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
       } else if (srcType === "waste" && dstType === "stock") {
         delay = (dest.index ?? 0) * 8; // recycle sweep
         duration = 200;
+      } else if (moved && dest.ref && arrivingPiles.has(pileKey(dest.ref))) {
+        delay = 240; // land on the pile only after the cover flip is done
+        duration = 240;
       }
       jobs.push(tweenCard(view, start ?? defaultSpawnPose(), dest, delay, duration));
     }
