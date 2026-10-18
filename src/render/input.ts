@@ -136,16 +136,17 @@ export class InputHandler {
       return;
     }
 
-    const world = this.pointerWorld(e, 0);
-    const target = world ? this.dropTargetAt(world) : null;
-    const legal = target
-      ? this.controller
-          .legalDropTargets(drag.from, drag.count)
-          .some((t) => t.type === target.type && t.index === target.index)
-      : false;
+    const world = this.pointerWorld(e, DRAG_Z);
+    const target = world
+      ? this.dropTargetAt(
+          world.x + drag.grabDx,
+          world.y + drag.grabDy,
+          this.controller.legalDropTargets(drag.from, drag.count),
+        )
+      : null;
 
     this.clearHighlights();
-    if (target && legal) {
+    if (target) {
       this.controller.tryMove(drag.from, target, drag.count);
     } else {
       this.controller.refresh(); // snap back
@@ -312,39 +313,43 @@ export class InputHandler {
 
   // ---------------------------------------------------------- drop targets
 
-  /** Pile under a world point (tableau columns & foundations only). */
-  private dropTargetAt(world: THREE.Vector3): PileRef | null {
-    let best: { ref: PileRef; dist: number } | null = null;
+  /**
+   * Drop target for a dragged stack whose lead card is centered at
+   * (leadX, leadY). Considers legal targets only, scoring each hitbox by
+   * its overlap area with the lead card — the card visibly sitting over a
+   * highlight is what counts, not where the pointer happens to be.
+   */
+  private dropTargetAt(leadX: number, leadY: number, targets: PileRef[]): PileRef | null {
+    const hw = CARD_W / 2;
+    const hh = CARD_H / 2;
+    const state = this.controller.state;
 
+    let best: { ref: PileRef; overlap: number } | null = null;
     const consider = (ref: PileRef, cx: number, top: number, bottom: number) => {
-      if (Math.abs(world.x - cx) > CARD_W / 2 + 0.3) return;
-      if (world.y > top || world.y < bottom) return;
-      const dist = Math.hypot(
-        world.x - cx,
-        Math.min(Math.abs(world.y - top), Math.abs(world.y - bottom)),
-      );
-      if (!best || dist < best.dist) best = { ref, dist };
+      const ox = Math.min(leadX + hw, cx + hw + 0.3) - Math.max(leadX - hw, cx - hw - 0.3);
+      const oy = Math.min(leadY + hh, top) - Math.max(leadY - hh, bottom);
+      if (ox <= 0 || oy <= 0) return;
+      const overlap = ox * oy;
+      if (!best || overlap > best.overlap) best = { ref, overlap };
     };
 
-    const state = this.controller.state;
-    for (let i = 0; i < 7; i++) {
-      const slot = slotPlacement({ type: "tableau", index: i });
-      const pile = state.tableau[i];
-      // Column hitbox spans from above the slot to past the pile bottom.
-      const bottom =
-        pile.length > 0
-          ? cardPlacement(state, { type: "tableau", index: i }, pile.length - 1).y -
-            CARD_H / 2 -
-            0.3
-          : slot.y - CARD_H / 2 - 0.3;
-      consider({ type: "tableau", index: i }, slot.x, slot.y + CARD_H / 2 + 0.3, bottom);
+    for (const ref of targets) {
+      if (ref.type === "tableau") {
+        const slot = slotPlacement(ref);
+        const pile = state.tableau[ref.index];
+        // Column hitbox spans from above the slot to past the pile bottom.
+        const bottom =
+          pile.length > 0
+            ? cardPlacement(state, ref, pile.length - 1).y - CARD_H / 2 - 0.3
+            : slot.y - CARD_H / 2 - 0.3;
+        consider(ref, slot.x, slot.y + CARD_H / 2 + 0.3, bottom);
+      } else if (ref.type === "foundation") {
+        const slot = slotPlacement(ref);
+        consider(ref, slot.x, slot.y + CARD_H / 2 + 0.3, slot.y - CARD_H / 2 - 0.3);
+      }
     }
-    for (let f = 0; f < 4; f++) {
-      const slot = slotPlacement({ type: "foundation", index: f });
-      consider({ type: "foundation", index: f }, slot.x, slot.y + CARD_H / 2, slot.y - CARD_H / 2);
-    }
-    const found = best as { ref: PileRef; dist: number } | null;
-    return found?.ref ?? null;
+    const found = best as { ref: PileRef; overlap: number } | null;
+    return found && found.overlap >= CARD_W * CARD_H * 0.3 ? found.ref : null;
   }
 
   private overStockSlot(world: THREE.Vector3): boolean {
