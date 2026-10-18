@@ -14,6 +14,9 @@ interface Pose {
   y: number;
   z: number;
   faceUp: boolean;
+  /** Pile the card lives in (and its index) — used to classify transitions. */
+  ref?: PileRef;
+  index?: number;
 }
 
 const ARC_LIFT = 0.35; // z bump while a card is in transit
@@ -69,7 +72,14 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
     for (const { ref, pile } of locate(state)) {
       pile.forEach((card, stackIndex) => {
         const p = cardPlacement(state, ref, stackIndex);
-        poses.set(card.id, { x: p.x, y: p.y, z: p.z, faceUp: card.faceUp });
+        poses.set(card.id, {
+          x: p.x,
+          y: p.y,
+          z: p.z,
+          faceUp: card.faceUp,
+          ref,
+          index: stackIndex,
+        });
       });
     }
     return poses;
@@ -115,7 +125,9 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
             from.z + (to.z - from.z) * t + Math.sin(t * Math.PI) * ARC_LIFT,
           );
           if (from.faceUp !== to.faceUp) {
-            group.rotation.y = fromRot + (toRot - fromRot) * t;
+            // Hold the flip until the second half of the flight.
+            const rt = Math.min(1, Math.max(0, (t - 0.35) / 0.65));
+            group.rotation.y = fromRot + (toRot - fromRot) * rt;
           }
         },
       })
@@ -128,8 +140,16 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
   const animateStateChange = async (prev: GameState, next: GameState): Promise<void> => {
     const from = posesOf(prev);
     const to = posesOf(next);
-    const jobs: Promise<void>[] = [];
 
+    // Sequencing: cards drawn from the stock fly after existing waste cards
+    // have shifted aside, staggered by draw order — flight paths never cross.
+    const drawnIds = [...to.entries()]
+      .filter(([id, p]) => p.ref?.type === "waste" && from.get(id)?.ref?.type === "stock")
+      .sort((a, b) => (a[1].index ?? 0) - (b[1].index ?? 0))
+      .map(([id]) => id);
+    const drawOrder = new Map(drawnIds.map((id, i) => [id, i]));
+
+    const jobs: Promise<void>[] = [];
     for (const [id, dest] of to) {
       const start = from.get(id);
       const view = cardViews.get(id);
@@ -146,7 +166,21 @@ export async function createGameRenderer(container: HTMLElement): Promise<GameRe
         view.group.visible = true;
         continue;
       }
-      jobs.push(tweenCard(view, start ?? defaultSpawnPose(), dest, 0, 260));
+
+      let delay = 0;
+      let duration = 260;
+      const srcType = start?.ref?.type;
+      const dstType = dest.ref?.type;
+      if (drawOrder.has(id)) {
+        delay = 110 + drawOrder.get(id)! * 90; // stock -> waste draw
+        duration = 240;
+      } else if (srcType === "waste" && dstType === "waste") {
+        duration = 130; // fast shift out of the way first
+      } else if (srcType === "waste" && dstType === "stock") {
+        delay = (dest.index ?? 0) * 8; // recycle sweep
+        duration = 200;
+      }
+      jobs.push(tweenCard(view, start ?? defaultSpawnPose(), dest, delay, duration));
     }
     await Promise.all(jobs);
     syncState(next);
