@@ -168,9 +168,14 @@ export class GameController {
     return false;
   }
 
-  /** Force a visual resync (used after cancelled drags). */
+  /**
+   * Return cards to their state poses, animated from wherever they
+   * currently are on screen (e.g. dropped mid-drag with no legal target).
+   * `animateStateChange(state, state)` is a pose-diff: undisplaced cards
+   * snap instantly, displaced ones fly back from the hand.
+   */
   refresh(): void {
-    this.renderer.syncState(this.state);
+    void this.renderer.animateStateChange(this.state, this.state);
   }
 
   // ------------------------------------------------------------------ hint

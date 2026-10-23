@@ -45,6 +45,11 @@ Undo/redo/solve/deal all flow through the same path.
 
 Timing discipline — follow it when adding transitions:
 
+- **Diff from the screen, not the state.** `animateStateChange` overrides the nominal
+  `posesOf(prev)` starts with each view's live on-screen transform, so dropped cards
+  fly from the hand and interrupted flights retarget from reality.
+  `controller.refresh()` exploits this: it diffs `state` against itself, so
+  displaced cards (cancelled drags) glide back while everything else is a no-op.
 - **Never let two tweens cross paths.** Move+flip pairs on the same pile are ordered
   directionally: a mover _arriving_ waits for the cover flip to finish; a mover
   _leaving_ goes first, then the reveal. Stock draws: waste shifts fast first, drawn

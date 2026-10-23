@@ -154,6 +154,25 @@ export async function createGameRenderer(
     const from = posesOf(prev);
     const to = posesOf(next);
 
+    // Fly from the hand: dragged cards (and anything mid-flight) are
+    // wherever the screen shows them, not at their nominal prev-state
+    // pose. Diff from the live view positions so a dropped card tweens
+    // from where the pointer released it, not from its pile slot.
+    for (const [id, pose] of from) {
+      const view = cardViews.get(id);
+      if (!view) continue;
+      const p = view.group.position;
+      if (
+        Math.abs(p.x - pose.x) > 1e-4 ||
+        Math.abs(p.y - pose.y) > 1e-4 ||
+        Math.abs(p.z - pose.z) > 1e-4
+      ) {
+        pose.x = p.x;
+        pose.y = p.y;
+        pose.z = p.z;
+      }
+    }
+
     // Camera zooms in/out with the tableau depth, gliding alongside the
     // card flights below (the zoom tween is the rig's own, so the final
     // syncState's cancelAll can't cut it short).
