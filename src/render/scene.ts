@@ -99,6 +99,12 @@ export interface SceneRig {
   fitBounds(bottom: number, animate: boolean): void;
   /** Immediate refit to the current bounds (used on container resize). */
   resize(): void;
+  /**
+   * Multiply the manual zoom by `scale` (clamped to MIN/MAX_ZOOM) and
+   * refit immediately. Wheel and pinch both feed this; the factor survives
+   * resizes and state-driven refits.
+   */
+  zoomBy(scale: number): void;
   /** Advance any in-flight zoom tween; call from the render loop. */
   tick(): void;
   dispose(): void;
@@ -108,6 +114,10 @@ const ZOOM_MS = 550;
 // Extra slack below the deepest card: keeps big stacks clear of the screen
 // edge (browser chrome, rounded corners, fingers) instead of hugging it.
 const BOTTOM_PAD = 1.1;
+// Manual zoom (wheel/pinch) multiplies the fit distance; 1 is the default
+// fit, lower factors zoom in, higher zoom out.
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 2;
 
 export function createSceneRig(container: HTMLElement): SceneRig {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -126,6 +136,7 @@ export function createSceneRig(container: HTMLElement): SceneRig {
   // Camera fitting tracks the content bottom (deepest tableau card) rather
   // than the static worst-case board height, so wide screens stay zoomed in.
   let fitBottom = BOARD_BOTTOM;
+  let userZoom = 1;
   const applied = { dist: 0, cy: 0 };
   let zoom: {
     from: { dist: number; cy: number };
@@ -146,7 +157,7 @@ export function createSceneRig(container: HTMLElement): SceneRig {
     const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
     const distForHeight = fitH / 2 / Math.tan(halfFov);
     const distForWidth = fitW / 2 / Math.tan(halfFov) / camera.aspect;
-    const dist = Math.max(distForHeight, distForWidth) * 1.02;
+    const dist = Math.max(distForHeight, distForWidth) * 1.02 * userZoom;
 
     return { dist, cy: (top + bottom) / 2 };
   };
@@ -193,6 +204,13 @@ export function createSceneRig(container: HTMLElement): SceneRig {
     debugLog(target.dist);
   };
 
+  const zoomBy = (scale: number): void => {
+    const next = THREE.MathUtils.clamp(userZoom * scale, MIN_ZOOM, MAX_ZOOM);
+    if (next === userZoom) return;
+    userZoom = next;
+    snapToFit();
+  };
+
   const tick = (): void => {
     if (!zoom) return;
     const t = Math.min(1, (performance.now() - zoom.startAt) / ZOOM_MS);
@@ -215,6 +233,7 @@ export function createSceneRig(container: HTMLElement): SceneRig {
     camera,
     fitBounds,
     resize: snapToFit,
+    zoomBy,
     tick,
     dispose() {
       observer.disconnect();

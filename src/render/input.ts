@@ -11,6 +11,9 @@ import type { PileRef } from "../game/types";
 const DRAG_SLOP_PX = 5;
 const DOUBLE_TAP_MS = 320;
 const DOUBLE_TAP_PX = 24;
+// Exponential wheel zoom: one 100-unit notch ≈ 14% zoom in/out; trackpad
+// pixel deltas stay smooth. Positive deltaY zooms out, negative zooms in.
+const WHEEL_ZOOM_RATE = 0.0015;
 
 interface DragState {
   from: PileRef;
@@ -34,6 +37,10 @@ export class InputHandler {
   private drag: DragState | null = null;
   private pendingStockClick: { x: number; y: number } | null = null;
   private lastTap: { x: number; y: number; time: number } | null = null;
+  /** Active non-mouse pointers, keyed by pointerId (pinch tracking). */
+  private readonly pointers = new Map<number, { x: number; y: number }>();
+  /** Non-null while a two-finger pinch is zooming. */
+  private pinch: { dist: number } | null = null;
   private readonly canvas: HTMLCanvasElement;
   private readonly controller: GameController;
   private readonly renderer: GameRenderer;
@@ -50,6 +57,7 @@ export class InputHandler {
     this.canvas.addEventListener("pointercancel", this.onPointerCancel);
     this.canvas.addEventListener("dblclick", this.onDoubleClick);
     this.canvas.addEventListener("contextmenu", this.onContextMenu);
+    this.canvas.addEventListener("wheel", this.onWheel, { passive: false });
     this.canvas.style.touchAction = "none";
   }
 
@@ -60,11 +68,23 @@ export class InputHandler {
     this.canvas.removeEventListener("pointercancel", this.onPointerCancel);
     this.canvas.removeEventListener("dblclick", this.onDoubleClick);
     this.canvas.removeEventListener("contextmenu", this.onContextMenu);
+    this.canvas.removeEventListener("wheel", this.onWheel);
   }
 
   // ---------------------------------------------------------------- events
 
   private onPointerDown = (e: PointerEvent): void => {
+    // Track touch/pen pointers for pinch-zoom; a second finger starts a
+    // pinch and cancels whatever single-pointer interaction was pending.
+    if (e.pointerType !== "mouse") {
+      this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.pointers.size === 2) {
+        this.beginPinch();
+        return;
+      }
+      if (this.pinch) return; // extra fingers join the pinch, nothing else
+    }
+
     if (e.button !== 0) return;
     const { controller } = this;
     if (controller.state.status !== "playing") return;
@@ -86,6 +106,18 @@ export class InputHandler {
   };
 
   private onPointerMove = (e: PointerEvent): void => {
+    if (this.pinch && this.pointers.has(e.pointerId)) {
+      this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const [a, b] = [...this.pointers.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      if (dist > 0 && this.pinch.dist > 0) {
+        // Incremental ratio keeps the clamp from fighting the fingers.
+        this.renderer.rig.zoomBy(dist / this.pinch.dist);
+        this.pinch.dist = dist;
+      }
+      return;
+    }
+
     if (this.drag) {
       if (!this.drag.active) {
         const dx = e.clientX - this.drag.startX;
@@ -98,6 +130,13 @@ export class InputHandler {
   };
 
   private onPointerUp = (e: PointerEvent): void => {
+    if (e.pointerType !== "mouse") this.pointers.delete(e.pointerId);
+    if (this.pinch) {
+      // Fingers leaving a pinch are not taps, clicks, or drops.
+      if (this.pointers.size < 2) this.pinch = null;
+      return;
+    }
+
     // Double-tap detection for touch/pen — the DOM `dblclick` event only
     // fires for mouse double-clicks, never for double-taps.
     let isDoubleTap = false;
@@ -154,7 +193,13 @@ export class InputHandler {
     }
   };
 
-  private onPointerCancel = (): void => {
+  private onPointerCancel = (e: PointerEvent): void => {
+    if (e.pointerType !== "mouse") this.pointers.delete(e.pointerId);
+    if (this.pinch) {
+      if (this.pointers.size < 2) this.pinch = null;
+      return;
+    }
+
     if (this.drag?.active) {
       this.clearHighlights();
       this.drag = null;
@@ -227,6 +272,30 @@ export class InputHandler {
     }
     void controller.autoCollect();
   };
+
+  // ------------------------------------------------------------------ zoom
+
+  /** Mouse wheel / trackpad: zoom the camera about the board. */
+  private onWheel = (e: WheelEvent): void => {
+    e.preventDefault();
+    this.renderer.rig.zoomBy(Math.exp(-e.deltaY * WHEEL_ZOOM_RATE));
+  };
+
+  /**
+   * Second finger down: cancel any pending drag/click and switch to
+   * pinch-zoom, anchored to the current finger separation.
+   */
+  private beginPinch(): void {
+    if (this.drag?.active) {
+      this.clearHighlights();
+      this.controller.refresh(); // snap dragged cards back
+    }
+    this.drag = null;
+    this.pendingStockClick = null;
+    this.lastTap = null;
+    const [a, b] = [...this.pointers.values()];
+    this.pinch = { dist: Math.hypot(a.x - b.x, a.y - b.y) };
+  }
 
   // ------------------------------------------------------------------ drag
 

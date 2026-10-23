@@ -59,6 +59,11 @@ Timing discipline — follow it when adding transitions:
   cards. The zoom tween lives in the rig (`fitBounds(bottom, animate)`, ticked via
   `rig.tick()`), deliberately NOT in the shared `Animator` — `syncState`'s
   `cancelAll` must not cut it short. Resizes snap; state-driven refits glide.
+- **Manual zoom** multiplies the fit distance: `rig.zoomBy(scale)` (clamped to
+  `MIN_ZOOM`/`MAX_ZOOM` in `render/scene.ts`) refits immediately and the factor
+  survives resizes and state refits. Input: mouse wheel (`WHEEL_ZOOM_RATE`, exp
+  curve) and two-finger pinch (`beginPinch` in `render/input.ts` — a second finger
+  cancels any pending drag/tap; extra fingers join the pinch).
 
 ## Conventions & gotchas
 
