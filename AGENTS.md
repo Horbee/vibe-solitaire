@@ -83,7 +83,9 @@ Timing discipline — follow it when adding transitions:
   double-tap is detected from raw `pointerup`s (see `DOUBLE_TAP_*` in `render/input.ts`).
   Double actions aimed at the stock mean "draw twice", never a sweep. Right-click
   card → foundation; right-click felt → sweep (`autoCollectMoves`, lowest-rank-first,
-  per-card undo steps).
+  per-card undo steps). Grabs lift: cards rise into the hand over `LIFT_MS` via
+  per-card-keyed tweens in the shared `Animator`, so a drop/snap-back mid-lift
+  naturally takes over from the live pose.
 - **Deals are seeded** (`mulberry32`); `deal(seed, drawMode)` is deterministic. Keep it
   that way — seeded games are how bugs get reproduced.
 - Tests live in `tests/` (mirroring `src/`), import from `vite-plus/test` (Vitest is

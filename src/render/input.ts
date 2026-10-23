@@ -14,6 +14,9 @@ const DOUBLE_TAP_PX = 24;
 // Exponential wheel zoom: one 100-unit notch ≈ 14% zoom in/out; trackpad
 // pixel deltas stay smooth. Positive deltaY zooms out, negative zooms in.
 const WHEEL_ZOOM_RATE = 0.0015;
+// Grab: cards rise from the pile into the hand over this window instead
+// of teleporting to the pointer.
+const LIFT_MS = 170;
 
 interface DragState {
   from: PileRef;
@@ -24,6 +27,11 @@ interface DragState {
   grabDy: number;
   /** Per-card offset relative to the lead card (world units). */
   followers: { dx: number; dy: number; dz: number }[];
+  /** Live hand target of the lead card (world units, DRAG_Z plane). */
+  handX: number;
+  handY: number;
+  /** True once the lift finished; until then a tween drives the views. */
+  lifted: boolean;
   startX: number;
   startY: number;
   active: boolean;
@@ -123,7 +131,7 @@ export class InputHandler {
         const dx = e.clientX - this.drag.startX;
         const dy = e.clientY - this.drag.startY;
         if (Math.hypot(dx, dy) < DRAG_SLOP_PX) return;
-        this.activateDrag();
+        this.activateDrag(e);
       }
       if (this.drag.active) this.updateDrag(e);
     }
@@ -317,6 +325,9 @@ export class InputHandler {
         grabDx: 0,
         grabDy: 0,
         followers: [],
+        handX: 0,
+        handY: 0,
+        lifted: false,
         startX: e.clientX,
         startY: e.clientY,
         active: false,
@@ -350,13 +361,16 @@ export class InputHandler {
         dy: v.group.position.y - lead.y,
         dz: v.group.position.z - lead.z,
       })),
+      handX: lead.x,
+      handY: lead.y,
+      lifted: false,
       startX: e.clientX,
       startY: e.clientY,
       active: false,
     };
   }
 
-  private activateDrag(): void {
+  private activateDrag(e: PointerEvent): void {
     const drag = this.drag!;
     drag.active = true;
     this.sounds?.play("pickup");
@@ -366,17 +380,62 @@ export class InputHandler {
         .legalDropTargets(drag.from, drag.count)
         .map((t) => this.targetHighlightPlacement(t)),
     );
+
+    const world = this.pointerWorld(e, DRAG_Z);
+    if (world) {
+      drag.handX = world.x + drag.grabDx;
+      drag.handY = world.y + drag.grabDy;
+    }
+    if (drag.views.length === 0) {
+      drag.lifted = true;
+      return;
+    }
+
+    // Lift: rise from the pile into the hand instead of teleporting. The
+    // tween tracks the live hand target (so a moving finger is followed
+    // fluidly); per-card keys mean any state animation (drop, snap-back)
+    // naturally replaces it, taking over from the live pose.
+    for (let i = 0; i < drag.views.length; i++) {
+      const view = drag.views[i];
+      const start = view.group.position.clone();
+      const f = drag.followers[i];
+      const z = DRAG_Z + i * 0.01;
+      void this.renderer.animator
+        .add({
+          key: view.card.id,
+          duration: LIFT_MS,
+          update: (t) => {
+            if (this.drag !== drag) return;
+            view.group.position.set(
+              start.x + (drag.handX + f.dx - start.x) * t,
+              start.y + (drag.handY + f.dy - start.y) * t,
+              start.z + (z - start.z) * t,
+            );
+          },
+        })
+        .then(() => {
+          if (this.drag !== drag || drag.lifted) return;
+          drag.lifted = true;
+          this.applyHand(drag);
+        });
+    }
   }
 
   private updateDrag(e: PointerEvent): void {
     const drag = this.drag!;
     const world = this.pointerWorld(e, DRAG_Z);
     if (!world) return;
-    const leadX = world.x + drag.grabDx;
-    const leadY = world.y + drag.grabDy;
+    drag.handX = world.x + drag.grabDx;
+    drag.handY = world.y + drag.grabDy;
+    // Before the lift finishes the tween reads the live hand target;
+    // afterwards the views follow the pointer 1:1.
+    if (drag.lifted) this.applyHand(drag);
+  }
+
+  private applyHand(drag: DragState): void {
     drag.views.forEach((view, i) => {
       const f = drag.followers[i];
-      view.group.position.set(leadX + f.dx, leadY + f.dy, DRAG_Z + i * 0.01);
+      view.group.position.set(drag.handX + f.dx, drag.handY + f.dy, DRAG_Z + i * 0.01);
     });
   }
 
