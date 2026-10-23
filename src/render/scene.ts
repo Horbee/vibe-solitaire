@@ -38,13 +38,15 @@ function createFeltTexture(): THREE.CanvasTexture {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(3, 3);
+  texture.repeat.set(6, 6); // keeps the felt grain at the same world scale
   return texture;
 }
 
 function createTable(): THREE.Mesh {
+  // Large enough that a tilted camera never sees past the edge, even at
+  // max zoom-out on a tall phone.
   const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(60, 60),
+    new THREE.PlaneGeometry(120, 120),
     new THREE.MeshStandardMaterial({
       map: createFeltTexture(),
       roughness: 0.95,
@@ -93,16 +95,17 @@ export interface SceneRig {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   /**
-   * Fit the camera to content down to `bottom` (see `contentBottom`).
-   * With `animate` the camera glides to the new zoom; otherwise it snaps.
+   * Fit the camera to content down to `bottom` (see `contentBottom`):
+   * picks the orbit radius for the current tilt/aspect. With `animate`
+   * the camera glides there; otherwise it snaps.
    */
   fitBounds(bottom: number, animate: boolean): void;
   /** Immediate refit to the current bounds (used on container resize). */
   resize(): void;
   /**
-   * Multiply the manual zoom by `scale` (clamped to MIN/MAX_ZOOM) and
-   * refit immediately. Wheel and pinch both feed this; the factor survives
-   * resizes and state-driven refits.
+   * Multiply the manual zoom factor by `scale` (clamped to MIN/MAX_ZOOM)
+   * and refit immediately. Wheel and pinch both feed this; the factor
+   * survives resizes and state-driven refits.
    */
   zoomBy(scale: number): void;
   /** Advance any in-flight zoom tween; call from the render loop. */
@@ -114,10 +117,28 @@ const ZOOM_MS = 550;
 // Extra slack below the deepest card: keeps big stacks clear of the screen
 // edge (browser chrome, rounded corners, fingers) instead of hugging it.
 const BOTTOM_PAD = 1.1;
-// Manual zoom (wheel/pinch) multiplies the fit distance; 1 is the default
-// fit, lower factors zoom in, higher zoom out.
+// Manual zoom (wheel/pinch) multiplies the fit radius; 1 is the default
+// fit, lower factors lean in, higher pull back.
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2;
+// Seated at the tableau side of the table: the camera orbits the content
+// center from BELOW the board (where the deep stacks grow), looking
+// across toward the stock and foundations. A straight-down camera
+// letterboxes a width-fitted board into a strip on tall phone screens;
+// the tilt grows as the viewport narrows, so the near tableau rows —
+// where the game actually happens — render large while the far row
+// foreshortens. Wide screens keep a subtle tilt just for depth.
+const MIN_TILT = THREE.MathUtils.degToRad(8);
+const MAX_TILT = THREE.MathUtils.degToRad(50);
+const TILT_WIDE_ASPECT = 1.5; // at or above this aspect: MIN_TILT
+const TILT_NARROW_ASPECT = 0.5; // at or below this aspect: MAX_TILT
+// NDC breathing room around the fitted board corners. The bottom gets
+// extra: mobile browser chrome and gesture bars live there.
+const PAD_X = 0.04;
+const PAD_TOP = 0.04;
+const PAD_BOTTOM = 0.08;
+const FIT_SLACK = 1.02; // small safety on the binary-searched radius
+const FIT_STEPS = 36; // binary search iterations (~1e-10 precision)
 
 export function createSceneRig(container: HTMLElement): SceneRig {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -127,81 +148,144 @@ export function createSceneRig(container: HTMLElement): SceneRig {
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
+  // Dark felt tone: if the camera ever glimpses past the table plane
+  // (extreme aspect + zoom-out), the void reads as distant felt, not black.
+  scene.background = new THREE.Color(0x0c2e1b);
   scene.add(createTable());
   scene.add(createSlots());
   scene.add(...createLights());
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
 
-  // Camera fitting tracks the content bottom (deepest tableau card) rather
-  // than the static worst-case board height, so wide screens stay zoomed in.
+  // The camera orbits the vertical center of the content. Fitting tracks
+  // the content bottom (deepest tableau card) rather than the static
+  // worst-case board height, so wide screens stay zoomed in.
+  interface Pose {
+    /** Orbit radius from the look-at target. */
+    radius: number;
+    /** World y the camera looks at (vertical center of content). */
+    cy: number;
+    /** Radians from straight-down (0 = top-down). */
+    tilt: number;
+  }
+
   let fitBottom = BOARD_BOTTOM;
   let userZoom = 1;
-  const applied = { dist: 0, cy: 0 };
-  let zoom: {
-    from: { dist: number; cy: number };
-    to: { dist: number; cy: number };
-    startAt: number;
-  } | null = null;
+  const applied: Pose = { radius: 0, cy: 0, tilt: 0 };
+  let zoom: { from: Pose; to: Pose; startAt: number } | null = null;
 
-  const fitTarget = (): { dist: number; cy: number } => {
+  const tiltForAspect = (aspect: number): number => {
+    const t = THREE.MathUtils.clamp(
+      (TILT_WIDE_ASPECT - aspect) / (TILT_WIDE_ASPECT - TILT_NARROW_ASPECT),
+      0,
+      1,
+    );
+    const smooth = t * t * (3 - 2 * t);
+    return MIN_TILT + (MAX_TILT - MIN_TILT) * smooth;
+  };
+
+  // Board y grows toward the far row (stock/foundations); the camera sits
+  // at negative y — the tableau side, "below" the board — so the near
+  // tableau stacks land at the bottom of the screen, large, and the far
+  // row recedes toward the top.
+  const poseCamera = (p: Pose): void => {
+    camera.position.set(0, p.cy - Math.sin(p.tilt) * p.radius, Math.cos(p.tilt) * p.radius);
+    camera.lookAt(0, p.cy, 0);
+    camera.updateMatrixWorld();
+  };
+
+  /**
+   * Smallest orbit that keeps every board corner on screen. Projective
+   * maps preserve convexity, so the four z=0 corners bound the whole
+   * board; the far-edge pair is repeated at flip height so in-place
+   * reveals keep headroom. The projected quad shrinks monotonically as
+   * the orbit widens — binary-search the radius.
+   */
+  const fitTarget = (): Pose => {
     const w = container.clientWidth || 1;
     const h = container.clientHeight || 1;
     renderer.setSize(w, h);
     camera.aspect = w / h;
+    camera.updateProjectionMatrix();
 
     const top = BOARD_TOP + BOARD_MARGIN;
     const bottom = fitBottom - BOTTOM_PAD;
-    const fitW = BOARD_W + BOARD_MARGIN * 2;
-    const fitH = top - bottom;
-    const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
-    const distForHeight = fitH / 2 / Math.tan(halfFov);
-    const distForWidth = fitW / 2 / Math.tan(halfFov) / camera.aspect;
-    const dist = Math.max(distForHeight, distForWidth) * 1.02 * userZoom;
+    const cy = (top + bottom) / 2;
+    const tilt = tiltForAspect(camera.aspect);
+    const halfW = BOARD_W / 2 + BOARD_MARGIN;
+    const corners: THREE.Vector3[] = [
+      new THREE.Vector3(-halfW, top, 0),
+      new THREE.Vector3(halfW, top, 0),
+      new THREE.Vector3(-halfW, bottom, 0),
+      new THREE.Vector3(halfW, bottom, 0),
+      new THREE.Vector3(-halfW, top, 1),
+      new THREE.Vector3(halfW, top, 1),
+    ];
+    const probe = new THREE.Vector3();
+    const fits = (radius: number): boolean => {
+      poseCamera({ radius, cy, tilt });
+      for (const c of corners) {
+        probe.copy(c).project(camera);
+        if (Math.abs(probe.x) > 1 - PAD_X) return false;
+        if (probe.y > 1 - PAD_TOP || probe.y < -1 + PAD_BOTTOM) return false;
+      }
+      return true;
+    };
 
-    return { dist, cy: (top + bottom) / 2 };
+    let lo = 0;
+    let hi = 8;
+    while (!fits(hi) && hi < 512) {
+      lo = hi;
+      hi *= 2;
+    }
+    for (let i = 0; i < FIT_STEPS; i++) {
+      const mid = (lo + hi) / 2;
+      if (fits(mid)) hi = mid;
+      else lo = mid;
+    }
+    return { radius: hi * FIT_SLACK * userZoom, cy, tilt };
   };
 
-  const applyCamera = (dist: number, cy: number): void => {
-    applied.dist = dist;
-    applied.cy = cy;
-    camera.position.set(0, cy, dist);
-    camera.lookAt(0, cy, 0);
-    camera.updateProjectionMatrix();
+  const applyCamera = (p: Pose): void => {
+    applied.radius = p.radius;
+    applied.cy = p.cy;
+    applied.tilt = p.tilt;
+    poseCamera(p);
   };
 
-  const debugLog = (dist: number): void => {
+  const debugLog = (): void => {
     if (!location.search.includes("debug")) return;
-    const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
     const w = container.clientWidth || 1;
     const h = container.clientHeight || 1;
     console.info(
-      `[rig] container=${w}x${h} aspect=${camera.aspect.toFixed(3)} dist=${dist.toFixed(2)} ` +
-        `visibleW=${(2 * dist * Math.tan(halfFov) * camera.aspect).toFixed(2)} ` +
-        `canvas=${renderer.domElement.width}x${renderer.domElement.height} style=${renderer.domElement.style.width}x${renderer.domElement.style.height}`,
+      `[rig] container=${w}x${h} aspect=${camera.aspect.toFixed(3)} ` +
+        `radius=${applied.radius.toFixed(2)} ` +
+        `tilt=${THREE.MathUtils.radToDeg(applied.tilt).toFixed(1)}deg ` +
+        `zoom=${userZoom.toFixed(2)} canvas=${renderer.domElement.width}x${renderer.domElement.height}`,
     );
   };
 
   const snapToFit = (): void => {
     zoom = null;
-    const { dist, cy } = fitTarget();
-    applyCamera(dist, cy);
-    debugLog(dist);
+    applyCamera(fitTarget());
+    debugLog();
   };
 
   const fitBounds = (bottom: number, animate: boolean): void => {
     fitBottom = bottom;
     const target = fitTarget();
     const moved =
-      Math.abs(target.dist - applied.dist) > 1e-3 || Math.abs(target.cy - applied.cy) > 1e-3;
+      Math.abs(target.radius - applied.radius) > 1e-3 ||
+      Math.abs(target.cy - applied.cy) > 1e-3 ||
+      Math.abs(target.tilt - applied.tilt) > 1e-6;
     if (!animate || !moved) {
       zoom = null;
-      applyCamera(target.dist, target.cy);
+      applyCamera(target);
     } else {
       // Retarget mid-flight when the bounds change again before we arrive.
       zoom = { from: { ...applied }, to: target, startAt: performance.now() };
     }
-    debugLog(target.dist);
+    debugLog();
   };
 
   const zoomBy = (scale: number): void => {
@@ -215,10 +299,11 @@ export function createSceneRig(container: HTMLElement): SceneRig {
     if (!zoom) return;
     const t = Math.min(1, (performance.now() - zoom.startAt) / ZOOM_MS);
     const e = easeOutCubic(t);
-    applyCamera(
-      zoom.from.dist + (zoom.to.dist - zoom.from.dist) * e,
-      zoom.from.cy + (zoom.to.cy - zoom.from.cy) * e,
-    );
+    applyCamera({
+      radius: zoom.from.radius + (zoom.to.radius - zoom.from.radius) * e,
+      cy: zoom.from.cy + (zoom.to.cy - zoom.from.cy) * e,
+      tilt: zoom.from.tilt + (zoom.to.tilt - zoom.from.tilt) * e,
+    });
     if (t >= 1) zoom = null;
   };
 

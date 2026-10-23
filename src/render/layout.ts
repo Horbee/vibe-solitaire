@@ -3,7 +3,7 @@ import type { GameState, PileRef } from "../game/types";
 /**
  * World-space layout of the Klondike board. Units: one card is
  * CARD_W wide and CARD_H tall. Everything is centered on the origin;
- * the camera looks straight down the -Z axis.
+ * +Z is up out of the table plane (the camera orbits above it).
  */
 export const CARD_W = 1;
 export const CARD_H = 1.4;
