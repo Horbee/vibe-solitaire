@@ -87,6 +87,9 @@ function createLights(): THREE.Light[] {
   key.shadow.camera.near = 2;
   key.shadow.camera.far = 30;
   key.shadow.bias = -0.0005;
+  // Suppress self-shadow acne between stacked cards (0.004 apart) without
+  // erasing the felt shadow of a resting card (~0.02 above the table).
+  key.shadow.normalBias = 0.005;
   return [ambient, key];
 }
 
@@ -144,7 +147,7 @@ export function createSceneRig(container: HTMLElement): SceneRig {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFShadowMap;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();

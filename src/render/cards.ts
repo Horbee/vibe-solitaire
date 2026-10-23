@@ -59,6 +59,9 @@ export class CardView {
     const faceMesh = new THREE.Mesh(geometry, faceMat);
     faceMesh.position.z = 0.002;
     faceMesh.castShadow = true;
+    // Cards receive shadows too, so a lifted card shades the piles under
+    // it, not just the felt.
+    faceMesh.receiveShadow = true;
     faceMesh.userData.cardId = card.id;
 
     const backMat = new THREE.MeshStandardMaterial({
@@ -70,6 +73,7 @@ export class CardView {
     backMesh.position.z = -0.002;
     backMesh.rotation.y = Math.PI;
     backMesh.castShadow = true;
+    backMesh.receiveShadow = true;
     backMesh.userData.cardId = card.id;
 
     this.group = new THREE.Group();
