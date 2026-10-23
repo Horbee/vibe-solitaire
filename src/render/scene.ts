@@ -11,7 +11,7 @@ function createFeltTexture(): THREE.CanvasTexture {
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
 
-  ctx.fillStyle = "#1d5c31";
+  ctx.fillStyle = "#2e8b57";
   ctx.fillRect(0, 0, size, size);
 
   for (let i = 0; i < 6000; i++) {
@@ -30,7 +30,7 @@ function createFeltTexture(): THREE.CanvasTexture {
     size * 0.75,
   );
   vignette.addColorStop(0, "rgba(0,0,0,0)");
-  vignette.addColorStop(1, "rgba(0,0,0,0.38)");
+  vignette.addColorStop(1, "rgba(0,0,0,0.12)");
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, size, size);
 
@@ -75,8 +75,8 @@ function createSlots(): THREE.Group {
 }
 
 function createLights(): THREE.Light[] {
-  const ambient = new THREE.AmbientLight(0xffffff, 0.8);
-  const key = new THREE.DirectionalLight(0xffffff, 1.5);
+  const ambient = new THREE.AmbientLight(0xffffff, 1.3);
+  const key = new THREE.DirectionalLight(0xffffff, 2.2);
   key.position.set(5, 8, 10);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
