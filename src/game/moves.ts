@@ -1,6 +1,38 @@
 import { canDraw, getPile, isLegalMove, isWon } from "./rules";
-import type { GameState, Move } from "./types";
+import type { Card, GameState, Move } from "./types";
 import { SCORE } from "./types";
+
+/**
+ * Deep-clone a state with structuredClone semantics but far lower cost,
+ * so the solver's search can afford one clone per explored edge.
+ */
+export function cloneState(state: GameState): GameState {
+  const card = (c: Card): Card => ({ ...c });
+  return {
+    drawMode: state.drawMode,
+    seed: state.seed,
+    stock: state.stock.map(card),
+    waste: state.waste.map(card),
+    tableau: state.tableau.map((pile) => pile.map(card)),
+    foundations: state.foundations.map((pile) => pile.map(card)),
+    moves: state.moves,
+    score: state.score,
+    status: state.status,
+  };
+}
+
+/**
+ * Mutating move core, shared by applyMove and the solver's search.
+ * Legality is the caller's responsibility (applyMove checks first;
+ * the search only feeds it moves from legalMoves/canDraw).
+ */
+export function applyMoveInPlace(state: GameState, move: Move): void {
+  if (move.kind === "draw") {
+    applyDraw(state);
+  } else {
+    applyCardMove(state, move);
+  }
+}
 
 /**
  * Apply a move, returning the next state, or null when the move is illegal.
@@ -11,14 +43,9 @@ import { SCORE } from "./types";
  */
 export function applyMove(state: GameState, move: Move): GameState | null {
   if (!isLegalMove(state, move)) return null;
-  const next: GameState = structuredClone(state);
+  const next = cloneState(state);
   next.moves += 1;
-
-  if (move.kind === "draw") {
-    applyDraw(next);
-  } else {
-    applyCardMove(next, move);
-  }
+  applyMoveInPlace(next, move);
 
   next.score = Math.max(0, next.score);
   if (isWon(next)) next.status = "won";

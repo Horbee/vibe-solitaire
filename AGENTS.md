@@ -20,20 +20,23 @@ Completion bar for any change: `vp check`, `vp test`, and `vp build` all green.
 
 **`src/game/` never imports rendering, DOM, or Three.js.** The engine is pure:
 state is plain JSON-serializable data, mutated only through `applyMove(state, move)`
-which returns a new `structuredClone`d state (or `null` when illegal). Everything
-reusable — hints, the solver, undo — is built on that purity. Violations break the
-architecture; keep the seam.
+which returns a new deeply-cloned state (or `null` when illegal) — `cloneState` is the
+fast clone behind it; `applyMoveInPlace` is the shared mutating core the solver's
+search also uses. Everything reusable — hints, the solver, undo — is built on that
+purity. Violations break the architecture; keep the seam.
 
 Layers and the direction of dependency (lower never imports higher):
 
-1. `src/game/` — engine: types, seeded shuffle/deal, rules, moves, history, hint, solve.
+1. `src/game/` — engine: types, seeded shuffle/deal, difficulty, rules, moves,
+   history, hint, solve.
 2. `src/audio/` — procedural WebAudio SFX (`createSoundEngine`): oscillators + filtered
    noise, no asset files. Imports nothing; render/input/controller emit cues, the HUD
    owns the mute toggle, `main.ts` wires it up.
 3. `src/render/` — Three.js: atlas (procedural SVG card art), layout (fixed world-space
    board coordinates), scene, cards, input, anim. Imports `game` and `audio`.
-4. `src/controller.ts` — orchestration: owns `state`, history, timer, solver playback;
-   fires animations; imports both. HUD and input never talk to the engine directly.
+4. `src/controller.ts` — orchestration: owns `state`, history, timer, difficulty-graded
+   deals, right-click auto-collect; fires animations; imports both. HUD and input
+   never talk to the engine directly.
 5. `src/ui/` — DOM HUD and stats store. Subscribes to controller events; calls gated
    controller methods.
 
@@ -41,7 +44,7 @@ Layers and the direction of dependency (lower never imports higher):
 
 `render/index.ts` is **pose-diffing**: `animateStateChange(prev, next)` computes the
 absolute pose (x/y/z/faceUp/pile) of every card in both states and tweens what changed.
-Undo/redo/solve/deal all flow through the same path.
+Undo/redo/collect/deal all flow through the same path.
 
 Timing discipline — follow it when adding transitions:
 
@@ -87,7 +90,11 @@ Timing discipline — follow it when adding transitions:
   per-card-keyed tweens in the shared `Animator`, so a drop/snap-back mid-lift
   naturally takes over from the live pose.
 - **Deals are seeded** (`mulberry32`); `deal(seed, drawMode)` is deterministic. Keep it
-  that way — seeded games are how bugs get reproduced.
+  that way — seeded games are how bugs get reproduced. Difficulty grades deals by
+  solver effort (`dealForDifficulty` in `src/game/difficulty.ts`): easy = search
+  proves winnability within `EASY_SCAN_NODES`, classic = proven but only with real
+  search effort, hard = the raw deal (no scan, no guarantee). Budgets live in
+  `difficulty.ts`; tune there, and remember the scans block `newGame`.
 - Tests live in `tests/` (mirroring `src/`), import from `vite-plus/test` (Vitest is
   bundled; there is no `vitest` dependency). Build hand-crafted states with the
   `c()`/`makeState()` helpers in `tests/game/helpers.ts`.
@@ -105,7 +112,7 @@ Timing discipline — follow it when adding transitions:
   tween's 57.5% spin midpoint and `land` at arrival; `_recycle_` sweeps tick per card.
   Cues are scheduled on the AudioContext clock (`play(cue, delayMs)`), never setTimeout.
   Before the first pointer gesture the context is suspended and cues drop silently;
-  identical cues are throttled (~20–90 ms per kind) so solve/undo bursts stay musical.
+  identical cues are throttled (~20–90 ms per kind) so collect/undo bursts stay musical.
   Mute persists in `localStorage` key `solitaire.audio.v1`; all timbres are constants
   at the top of `audio/index.ts` (`GAIN`, `THROTTLE_MS`, `WIN_NOTES`) — tweak there.
 - Scoring lives in one constant (`SCORE` in `game/types.ts`); tweak there only.

@@ -1,5 +1,6 @@
-import { hint } from "./hint";
-import { applyMove } from "./moves";
+import { canDraw, isWon } from "./rules";
+import { legalMoves, isPointlessMove, scoreMove } from "./hint";
+import { applyMove, applyMoveInPlace, cloneState } from "./moves";
 import { canPlaceOnFoundation, getPile, topCard } from "./rules";
 import type { GameState, Move, PileRef } from "./types";
 import { foundationRef, FOUNDATION_COUNT, tableauRef, WASTE } from "./types";
@@ -67,34 +68,75 @@ function findNextFoundationMove(state: GameState): Move | null {
   return best?.move ?? null;
 }
 
-export interface SolveResult {
-  solved: boolean;
-  moves: Move[];
+/**
+ * Search-ordered candidate moves: the same heuristic priorities as hints
+ * (foundation placements and reveals first, draws last, never pulling
+ * back from a foundation), but without any UI reason strings.
+ */
+function orderedMoves(state: GameState): Move[] {
+  const scored: { move: Move; score: number }[] = [];
+  for (const move of legalMoves(state)) {
+    if (move.kind !== "move") continue;
+    if (isPointlessMove(state, move)) continue;
+    if (move.from.type === "foundation") continue;
+    scored.push({ move, score: scoreMove(state, move) });
+  }
+  if (canDraw(state)) {
+    scored.push({ move: { kind: "draw" }, score: 1 });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((s) => s.move);
 }
 
+export interface SearchResult {
+  /** "solved": a winning line was found. "budget": search gave up. */
+  status: "solved" | "budget";
+  /** Winning move line when solved; empty otherwise. */
+  moves: Move[];
+  /** Positions expanded — a deterministic effort proxy for difficulty. */
+  nodes: number;
+}
+
+export interface SearchOptions {
+  maxNodes?: number;
+}
+
+/** Default search budget; deals needing more are treated as unsolved. */
+export const SEARCH_MAX_NODES = 1_500;
+
 /**
- * Greedy auto-player: repeatedly takes the engine's best hint move until the
- * game is won, no moves remain, or the position loops. Not a proof-complete
- * solver — it is a fast heuristic player.
+ * Depth-first winnability search with fingerprint loop detection and a
+ * node budget. "solved" is a proof of winnability (its move line replays
+ * to a win through applyMove); "budget" is unknown, not a proof of loss.
  */
-export function autoSolve(state: GameState, maxMoves = 2000): SolveResult {
-  const moves: Move[] = [];
-  const seen = new Set<string>([fingerprint(state)]);
-  let current = state;
+export function search(state: GameState, options: SearchOptions = {}): SearchResult {
+  const maxNodes = options.maxNodes ?? SEARCH_MAX_NODES;
+  const seen = new Set<string>();
+  const path: Move[] = [];
+  let nodes = 0;
 
-  while (current.status === "playing" && moves.length < maxMoves) {
-    const nextMove = hint(current);
-    if (!nextMove) break;
-    const next = applyMove(current, nextMove.move);
-    if (!next) break;
-    const fp = fingerprint(next);
-    if (seen.has(fp)) break;
+  type Probe = "win" | "dead" | "budget";
+  const dfs = (s: GameState): Probe => {
+    if (s.status === "won") return "win";
+    const fp = fingerprint(s);
+    if (seen.has(fp)) return "dead";
     seen.add(fp);
-    moves.push(nextMove.move);
-    current = next;
-  }
+    if (++nodes > maxNodes) return "budget";
+    for (const move of orderedMoves(s)) {
+      const next = cloneState(s);
+      applyMoveInPlace(next, move);
+      if (isWon(next)) next.status = "won";
+      path.push(move);
+      const probe = dfs(next);
+      if (probe === "win" || probe === "budget") return probe;
+      path.pop();
+    }
+    return "dead";
+  };
 
-  return { solved: current.status === "won", moves };
+  return dfs(state) === "win"
+    ? { status: "solved", moves: path, nodes }
+    : { status: "budget", moves: [], nodes };
 }
 
 /**

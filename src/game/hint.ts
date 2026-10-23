@@ -88,6 +88,25 @@ export interface ScoredMove {
   reason: string;
 }
 
+/**
+ * Heuristic priority of a legal card move (higher = tried first by hints
+ * and the solver's search). Shared so search order matches hint quality.
+ */
+export function scoreMove(state: GameState, move: Extract<Move, { kind: "move" }>): number {
+  const source = getPile(state, move.from);
+  const head = source[source.length - move.count];
+  let score = 0;
+
+  if (move.to.type === "foundation") {
+    score += isSafeFoundationMove(state, head) ? 60 : 30;
+  } else if (move.to.type === "tableau") {
+    score += 20;
+  }
+  if (wouldReveal(state, move.from, move.count)) score += 45;
+  if (move.from.type === "waste") score += 5;
+  return score;
+}
+
 /** Rank candidate moves for hinting; best first. */
 export function rankMoves(state: GameState): ScoredMove[] {
   const scored: ScoredMove[] = [];
@@ -99,17 +118,8 @@ export function rankMoves(state: GameState): ScoredMove[] {
 
     const source = getPile(state, move.from);
     const moving = source.slice(source.length - move.count);
-    let score = 0;
 
-    if (move.to.type === "foundation") {
-      score += isSafeFoundationMove(state, moving[0]) ? 60 : 30;
-    } else if (move.to.type === "tableau") {
-      score += 20;
-    }
-    if (wouldReveal(state, move.from, move.count)) score += 45;
-    if (move.from.type === "waste") score += 5;
-
-    scored.push({ move, score, reason: formatMove(move, moving) });
+    scored.push({ move, score: scoreMove(state, move), reason: formatMove(move, moving) });
   }
 
   // Drawing is the last resort, always available while cards remain.

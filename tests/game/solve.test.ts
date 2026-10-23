@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { applyMove } from "../../src/game/moves";
-import { autoCollectMoves, autoCompleteMoves, autoSolve } from "../../src/game/solve";
+import { deal } from "../../src/game/deck";
+import { autoCollectMoves, autoCompleteMoves, search } from "../../src/game/solve";
 import { foundationRef } from "../../src/game/types";
 import { c, makeState } from "./helpers";
 
@@ -63,25 +64,40 @@ function nearWonPiles() {
   return { tableau: n.tableau, foundations: n.foundations };
 }
 
-describe("autoSolve", () => {
-  it("solves a trivially winnable position", () => {
-    const result = autoSolve(nearWon());
-    expect(result.solved).toBe(true);
-    expect(result.moves).toHaveLength(4);
+describe("search", () => {
+  it("finds a winning line for a winnable deal", () => {
+    const state = deal(2, 1); // known winnable under this strategy
+    const result = search(state, { maxNodes: 1_500 });
+
+    expect(result.status).toBe("solved");
+
+    let current = state;
+    for (const move of result.moves) {
+      const next = applyMove(current, move);
+      expect(next).not.toBeNull();
+      current = next!;
+    }
+    expect(current.status).toBe("won");
+  }, 30_000);
+
+  it("gives up within the budget on a stubborn deal", () => {
+    const result = search(deal(3, 1), { maxNodes: 1_500 });
+
+    expect(result.status).toBe("budget");
+    expect(result.moves).toEqual([]);
+    expect(result.nodes).toBeLessThanOrEqual(1_501);
+  }, 30_000);
+
+  it("treats an exhausted budget as unknown, not proof of loss", () => {
+    const result = search(deal(2, 1), { maxNodes: 1 });
+
+    expect(result.status).toBe("budget");
   });
 
-  it("reports an already-won game as solved with no moves", () => {
-    const result = autoSolve(makeState({ status: "won" }));
-    expect(result).toEqual({ solved: true, moves: [] });
-  });
+  it("reports an already-won state as solved with no moves", () => {
+    const result = search(makeState({ status: "won", ...nearWonPiles() }));
 
-  it("terminates on cycling positions without winning", () => {
-    const state = makeState({
-      stock: [c("hearts", 1, false), c("spades", 2, false)],
-    });
-    const result = autoSolve(state);
-    expect(result.solved).toBe(false);
-    expect(result.moves.length).toBeLessThan(50);
+    expect(result).toEqual({ status: "solved", moves: [], nodes: 0 });
   });
 });
 

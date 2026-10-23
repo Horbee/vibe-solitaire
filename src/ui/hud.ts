@@ -1,6 +1,15 @@
 import type { GameController } from "../controller";
+import { CLASSIC_SCAN_NODES } from "../game/difficulty";
+import type { Difficulty } from "../game/difficulty";
 import type { StatsStore } from "./statsStore";
 import type { SoundEngine } from "../audio/index";
+
+const DIFFICULTY_LABEL: Record<Difficulty, string> = {
+  easy: "Easy",
+  classic: "Classic",
+  hard: "Hard",
+};
+const DIFFICULTY_ORDER: Difficulty[] = ["easy", "classic", "hard"];
 
 function formatTime(totalSec: number): string {
   const m = Math.floor(totalSec / 60);
@@ -45,10 +54,11 @@ export class HUD {
   private scoreEl: HTMLElement;
   private timeEl: HTMLElement;
   private movesEl: HTMLElement;
+  private solverEl: HTMLElement;
   private undoBtn: HTMLButtonElement;
   private redoBtn: HTMLButtonElement;
   private hintBtn: HTMLButtonElement;
-  private solveBtn: HTMLButtonElement;
+  private difficultyBtn: HTMLButtonElement;
   private drawBtn: HTMLButtonElement;
   private soundBtn: HTMLButtonElement;
   private toastEl: HTMLDivElement;
@@ -69,32 +79,37 @@ export class HUD {
     this.scoreEl = el("strong", "", "0");
     this.timeEl = el("strong", "", "0:00");
     this.movesEl = el("strong", "", "0");
+    this.solverEl = el("strong", "", "—");
     const statsBar = el("div", "stats");
     statsBar.append(
       this.stat("Score", this.scoreEl),
       this.stat("Time", this.timeEl),
       this.stat("Moves", this.movesEl),
+      this.stat("Solver", this.solverEl),
     );
 
     const newBtn = this.button("New", () => this.onNewGame());
     this.drawBtn = this.button("", () => this.onToggleDrawMode());
+    this.difficultyBtn = this.button("", () => this.onToggleDifficulty());
     this.undoBtn = this.button("Undo", () => controller.undo());
     this.redoBtn = this.button("Redo", () => controller.redo());
     this.hintBtn = this.button("Hint", () => this.onHint());
-    this.solveBtn = this.button("Solve", () => void controller.solve());
     const statsBtn = this.button("Stats", () => this.showStats());
     this.soundBtn = this.button("", () => this.onToggleSound());
     this.soundBtn.hidden = !sounds;
     this.soundBtn.title = "Toggle sound";
 
     const actions = el("div", "actions");
+    const restartBtn = this.button("Restart", () => this.onRestart());
+    restartBtn.title = "Replay this exact deal from the start";
     actions.append(
       newBtn,
+      restartBtn,
       this.drawBtn,
+      this.difficultyBtn,
       this.undoBtn,
       this.redoBtn,
       this.hintBtn,
-      this.solveBtn,
       statsBtn,
       this.soundBtn,
     );
@@ -136,14 +151,20 @@ export class HUD {
     const { state } = controller;
     this.scoreEl.textContent = String(state.score);
     this.movesEl.textContent = String(state.moves);
+    const { dealGrade } = controller;
+    this.solverEl.textContent =
+      dealGrade.status === "solved" ? String(dealGrade.nodes) : `>${CLASSIC_SCAN_NODES}`;
+    this.solverEl.title =
+      dealGrade.status === "solved"
+        ? `Debug: the solver proved this deal winnable in ${dealGrade.nodes} search nodes`
+        : `Debug: no win found within ${CLASSIC_SCAN_NODES} nodes (unknown, not proven unwinnable)`;
     this.updateTime();
 
     this.undoBtn.disabled = !controller.history.canUndo || controller.busy;
     this.redoBtn.disabled = !controller.history.canRedo || controller.busy;
     this.hintBtn.disabled = state.status !== "playing" || controller.busy;
-    this.solveBtn.disabled = state.status !== "playing" || controller.busy;
-    this.solveBtn.textContent = controller.busy ? "Solving…" : "Solve";
     this.drawBtn.textContent = `Draw ${controller.drawMode === 1 ? 1 : 3}`;
+    this.difficultyBtn.textContent = DIFFICULTY_LABEL[controller.difficulty];
     this.soundBtn.textContent = this.sounds?.muted === true ? "🔇" : "🔊";
 
     if (state.status === "won") this.showWin();
@@ -190,9 +211,6 @@ export class HUD {
       case "h":
         if (!modalOpen) this.onHint();
         break;
-      case "s":
-        if (!modalOpen) void this.controller.solve();
-        break;
     }
   }
 
@@ -209,6 +227,17 @@ export class HUD {
     controller.newGame();
   }
 
+  private onRestart(): void {
+    const { controller } = this;
+    const inProgress = controller.state.moves > 0 && controller.state.status === "playing";
+    if (inProgress && !window.confirm("Restart this deal? (current game will end)")) {
+      return;
+    }
+    this.winModal.close();
+    this.winShownForSeed = null;
+    controller.restart();
+  }
+
   private onToggleDrawMode(): void {
     const { controller } = this;
     const next = controller.drawMode === 1 ? 3 : 1;
@@ -222,6 +251,28 @@ export class HUD {
     this.winModal.close();
     this.winShownForSeed = null;
     controller.newGame(next);
+  }
+
+  private onToggleDifficulty(): void {
+    const { controller } = this;
+    const current = DIFFICULTY_ORDER.indexOf(controller.difficulty);
+    const next = DIFFICULTY_ORDER[(current + 1) % DIFFICULTY_ORDER.length];
+    const hint =
+      next === "easy"
+        ? " (solver-verified winnable)"
+        : next === "classic"
+          ? " (winnable, but harder)"
+          : " (random deal)";
+    if (
+      controller.state.moves > 0 &&
+      controller.state.status === "playing" &&
+      !window.confirm(`Start a new ${DIFFICULTY_LABEL[next]} game${hint}? (current game will end)`)
+    ) {
+      return;
+    }
+    this.winModal.close();
+    this.winShownForSeed = null;
+    controller.newGame(controller.drawMode, next);
   }
 
   private onToggleSound(): void {

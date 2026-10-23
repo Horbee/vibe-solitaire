@@ -1,10 +1,13 @@
 import { applyMove } from "./game/moves";
 import { canPlaceOnFoundation, getPile, isLegalMove } from "./game/rules";
 import { deal } from "./game/deck";
+import { CLASSIC_SCAN_NODES, dealForDifficulty } from "./game/difficulty";
+import type { Difficulty } from "./game/difficulty";
 import { History } from "./game/history";
 import { hint as findHint } from "./game/hint";
 import type { Hint } from "./game/hint";
-import { autoCollectMoves, autoSolve } from "./game/solve";
+import { autoCollectMoves, search } from "./game/solve";
+import type { SearchResult } from "./game/solve";
 import type { DrawMode, GameState, Move, PileRef } from "./game/types";
 import { foundationRef, FOUNDATION_COUNT, tableauRef, TABLEAU_COUNT } from "./game/types";
 import { cardPlacement, nextPlacement, slotPlacement } from "./render/layout";
@@ -26,18 +29,24 @@ function randomSeed(): number {
 type ChangeListener = () => void;
 type MessageListener = (text: string) => void;
 
-const SOLVE_STEP_MS = 300;
 const COLLECT_STEP_MS = 150;
 
 /**
  * Orchestrates the pure engine, the renderer, the HUD, and stats.
  * Owns the current GameState, undo/redo history, the game timer,
- * and the auto-solver.
+ * the difficulty-graded deal, and the right-click auto-collect.
  */
 export class GameController {
   state: GameState;
   readonly history = new History();
   drawMode: DrawMode;
+  difficulty: Difficulty;
+  /**
+   * Debug info for the HUD: the solver's verdict on the freshly dealt
+   * state — search nodes needed to prove winnability, or "budget" when
+   * no win was found within CLASSIC_SCAN_NODES. Graded once per deal.
+   */
+  dealGrade: SearchResult;
   solving = false;
 
   private readonly renderer: GameRenderer;
@@ -59,7 +68,9 @@ export class GameController {
     this.stats = stats;
     this.sounds = sounds;
     this.drawMode = drawMode;
-    this.state = deal(randomSeed(), drawMode);
+    this.difficulty = "hard"; // the historical raw deal
+    this.state = dealForDifficulty(this.difficulty, drawMode, randomSeed());
+    this.dealGrade = search(this.state, { maxNodes: CLASSIC_SCAN_NODES });
     void this.renderer.animateDeal(this.state);
   }
 
@@ -92,10 +103,27 @@ export class GameController {
     return Math.max(0, Math.floor((Date.now() - this.startedAt) / 1000));
   }
 
-  newGame(drawMode: DrawMode = this.drawMode): void {
-    this.finishAbandonedGame();
+  newGame(drawMode: DrawMode = this.drawMode, difficulty: Difficulty = this.difficulty): void {
     this.drawMode = drawMode;
-    this.state = deal(randomSeed(), drawMode);
+    this.difficulty = difficulty;
+    const state = dealForDifficulty(difficulty, drawMode, randomSeed());
+    this.dealGrade = search(state, { maxNodes: CLASSIC_SCAN_NODES });
+    this.startFresh(state);
+  }
+
+  /**
+   * Redeal the exact same seeded deal from scratch (history, timer and
+   * score reset). The deal grade stays: the state is identical to the
+   * original deal.
+   */
+  restart(): void {
+    this.startFresh(deal(this.state.seed, this.drawMode));
+  }
+
+  /** Install a freshly dealt state as the current game. */
+  private startFresh(state: GameState): void {
+    this.finishAbandonedGame();
+    this.state = state;
     this.history.clear();
     this.startedAt = Date.now();
     this.gameRecorded = false;
@@ -199,29 +227,6 @@ export class GameController {
       cardPlacement(this.state, move.from, Math.max(0, idx)),
       nextPlacement(this.state, move.to),
     ];
-  }
-
-  // ----------------------------------------------------------------- solve
-
-  /** Auto-play the game with the greedy engine strategy, animated. */
-  async solve(): Promise<void> {
-    if (this.solving || this.state.status !== "playing") return;
-    this.solving = true;
-    const token = ++this.solveToken;
-    this.emit();
-    try {
-      const outcome = autoSolve(this.state);
-      for (const move of outcome.moves) {
-        if (token !== this.solveToken || this.state.status !== "playing") break;
-        if (!this.apply(move)) break;
-        await new Promise((r) => setTimeout(r, SOLVE_STEP_MS));
-      }
-    } finally {
-      if (token === this.solveToken) {
-        this.solving = false;
-        this.emit();
-      }
-    }
   }
 
   // ------------------------------------------------------------- collect
